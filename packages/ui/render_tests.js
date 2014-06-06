@@ -13,6 +13,7 @@ var LI = HTML.LI;
 var SPAN = HTML.SPAN;
 var HR = HTML.HR;
 var TEXTAREA = HTML.TEXTAREA;
+var INPUT = HTML.INPUT;
 
 Tinytest.add("ui - render - basic", function (test) {
   var run = function (input, expectedInnerHTML, expectedHTML, expectedCode) {
@@ -20,7 +21,8 @@ Tinytest.add("ui - render - basic", function (test) {
     materialize(input, div);
     test.equal(canonicalizeHtml(div.innerHTML), expectedInnerHTML);
     test.equal(toHTML(input), expectedHTML);
-    test.equal(toCode(input), expectedCode);
+    if (typeof expectedCode !== 'undefined')
+      test.equal(toCode(input), expectedCode);
   };
 
   run(P('Hello'),
@@ -72,6 +74,53 @@ Tinytest.add("ui - render - basic", function (test) {
       '<div class="foo"><ul><li><p><a href="#one">One</a></p></li><li><p>Two<br>Three</p></li></ul></div>',
       'HTML.DIV({"class": "foo"}, HTML.UL(HTML.LI(HTML.P(HTML.A({href: "#one"}, "One"))), HTML.LI(HTML.P("Two", HTML.BR(), "Three"))))');
 
+
+  // Test nully attributes
+  run(BR({x: null,
+          y: [[], []],
+          a: [['']]}),
+      '<br a="">',
+      '<br a="">',
+      'HTML.BR({a: [[""]]})');
+
+  run(BR({
+    x: function () { return function () { return []; }; },
+    a: function () { return function () { return ''; }; }}),
+      '<br a="">',
+      '<br a="">');
+});
+
+// test that we correctly update the 'value' property on input fields
+// rather than the 'value' attribute. the 'value' attribute only sets
+// the initial value.
+Tinytest.add("ui - render - input - value", function (test) {
+  var R = ReactiveVar("hello");
+  var div = document.createElement("DIV");
+  materialize(INPUT({value: function () { return R.get(); }}), div);
+  var inputEl = div.querySelector('input');
+  test.equal(inputEl.value, "hello");
+  inputEl.value = "goodbye";
+  R.set("hola");
+  Deps.flush();
+  test.equal(inputEl.value, "hola");
+});
+
+// test that we correctly update the 'checked' property rather than
+// the 'checked' attribute on input fields of type 'checkbox'. the
+// 'checked' attribute only sets the initial value.
+Tinytest.add("ui - render - input - checked", function (test) {
+  var R = ReactiveVar(null);
+  var div = document.createElement("DIV");
+  materialize(INPUT({type: "checkbox", checked: function () { return R.get(); }}), div);
+  var inputEl = div.querySelector('input');
+  test.equal(inputEl.checked, false);
+  inputEl.checked = true;
+
+  R.set("checked");
+  Deps.flush();
+  R.set(null);
+  Deps.flush();
+  test.equal(inputEl.checked, false);
 });
 
 Tinytest.add("ui - render - textarea", function (test) {
@@ -86,7 +135,10 @@ Tinytest.add("ui - render - textarea", function (test) {
     var div = document.createElement("DIV");
     var node = TEXTAREA(optNode || text);
     materialize(node, div);
-    test.equal(div.querySelector('textarea').value, text);
+
+    var value = div.querySelector('textarea').value;
+    value = value.replace(/\r\n/g, "\n"); // IE8 substitutes \n with \r\n
+    test.equal(value, text);
 
     test.equal(toHTML(node), html);
     if (typeof code === 'string')
@@ -355,169 +407,6 @@ Tinytest.add("ui - render - components", function (test) {
   })();
 });
 
-
-Tinytest.add("ui - render - emboxValue", function (test) {
-  var R = ReactiveVar('ALPHA');
-
-  var numCalcs = [0, 0, 0];
-
-  var firstLetter = UI.emboxValue(function () {
-    numCalcs[0]++;
-    return R.get().charAt(0);
-  });
-
-  var secondLetter = UI.emboxValue(function () {
-    numCalcs[1]++;
-    return R.get().charAt(1);
-  });
-
-  var thirdLetter = UI.emboxValue(function () {
-    numCalcs[2]++;
-    return R.get().charAt(2);
-  });
-
-  var setSink = function (n, value) {
-    if (sinks[n] === value)
-      sinks[n] += '-error'; // duplicate, shouldn't happen!
-    else
-      sinks[n] = value;
-  };
-
-
-  test.equal(R.numListeners(), 0);
-  test.equal(numCalcs, [0, 0, 0]);
-
-  var comps = [];
-  var sinks = [];
-  comps[0] = Deps.autorun(function () {
-    setSink(0, firstLetter());
-  });
-  comps[1] = Deps.autorun(function () {
-    setSink(1, firstLetter());
-  });
-
-  test.equal(R.numListeners(), 1);
-  test.equal(numCalcs, [1, 0, 0]);
-  test.equal(sinks, ['A', 'A']);
-
-  R.set('APPLE');
-  Deps.flush();
-  test.equal(R.numListeners(), 1);
-  test.equal(numCalcs, [2, 0, 0]);
-  test.equal(sinks, ['A', 'A']);
-
-  // This non-reactive call to firstLetter piggybacks on the
-  // existing computation, which already has the value handy.
-  test.equal(firstLetter(), 'A');
-  test.equal(numCalcs, [2, 0, 0]);
-
-  comps[0].stop();
-  comps[1].stop();
-  Deps.flush();
-  test.equal(R.numListeners(), 0);
-  test.equal(numCalcs, [2, 0, 0]);
-  test.equal(sinks, ['A', 'A']);
-
-  // *This* non-reactive call to firstLetter, on the other hand,
-  // happens at a time when the emboxed value has no running
-  // computation, so it gets calculated directly.
-  test.equal(firstLetter(), 'A');
-  test.equal(numCalcs, [3, 0, 0]);
-  test.equal(R.numListeners(), 0);
-
-  // Start some new autoruns.
-  sinks = [];
-  comps[0] = Deps.autorun(function () {
-    setSink(0, firstLetter());
-  });
-  comps[1] = Deps.autorun(function () {
-    firstLetter(); // extra call shouldn't matter
-    setSink(1, firstLetter());
-  });
-
-  test.equal(R.numListeners(), 1);
-  test.equal(numCalcs, [4, 0, 0]);
-  test.equal(sinks, ['A', 'A']);
-
-  R.set('BANANA');
-  Deps.flush();
-  test.equal(R.numListeners(), 1);
-  // it's important that exactly one calculation happened,
-  // which indicates that the inner computation of the
-  // emboxValue has been re-run but not torn down and
-  // re-established.
-  test.equal(numCalcs, [5, 0, 0]);
-  test.equal(sinks, ['B', 'B']);
-
-  R.set('CUCUMBER');
-  Deps.flush();
-  test.equal(R.numListeners(), 1);
-  test.equal(numCalcs, [6, 0, 0]);
-  test.equal(sinks, ['C', 'C']);
-
-  comps[2] = Deps.autorun(function () {
-    setSink(2, secondLetter());
-  });
-
-  test.equal(R.numListeners(), 2);
-  test.equal(numCalcs, [6, 1, 0]);
-  test.equal(sinks, ['C', 'C', 'U']);
-
-  R.set('DOILY');
-  Deps.flush();
-  test.equal(R.numListeners(), 2);
-  test.equal(numCalcs, [7, 2, 0]);
-  test.equal(sinks, ['D', 'D', 'O']);
-
-  comps[3] = Deps.autorun(function () {
-    setSink(3, firstLetter() + secondLetter() + thirdLetter());
-  });
-
-  test.equal(R.numListeners(), 3);
-  test.equal(numCalcs, [7, 2, 1]);
-  test.equal(sinks, ['D', 'D', 'O', 'DOI']);
-
-
-  R.set('ENVY');
-  Deps.flush();
-  test.equal(R.numListeners(), 3);
-  test.equal(numCalcs, [8, 3, 2]);
-  test.equal(sinks, ['E', 'E', 'N', 'ENV']);
-
-  R.set('EMPTY');
-  Deps.flush();
-  test.equal(R.numListeners(), 3);
-  test.equal(numCalcs, [9, 4, 3]);
-  test.equal(sinks, ['E', 'E', 'M', 'EMP']);
-
-  comps[0].stop();
-  Deps.flush();
-  // comps[3] still listens to first, second, and third, which
-  // listen to R.
-  test.equal(R.numListeners(), 3);
-
-  comps[1].stop();
-  Deps.flush();
-  test.equal(R.numListeners(), 3);
-
-  comps[2].stop();
-  Deps.flush();
-  test.equal(R.numListeners(), 3);
-
-  comps[3].stop();
-  test.equal(firstLetter() + secondLetter() + thirdLetter(), 'EMP');
-  Deps.flush();
-  // BAM, all listeners gone!
-  test.equal(R.numListeners(), 0);
-
-  ////// Test non-function case
-
-  test.equal(UI.emboxValue(3)(), 3);
-  test.equal(UI.emboxValue(null)(), null);
-  test.equal(UI.emboxValue({x:1})(), {x:1});
-});
-
-
 Tinytest.add("ui - render - reactive attributes 2", function (test) {
   var R1 = ReactiveVar(['foo']);
   var R2 = ReactiveVar(['bar']);
@@ -541,19 +430,19 @@ Tinytest.add("ui - render - reactive attributes 2", function (test) {
   R2.set([[]]);
   Deps.flush();
   // We combine `['foo']` with what evaluates to `[[[]]]`, which is nully.
-  test.equal(spanCode.evaluateDynamicAttributes().blah, ["foo"]);
+  test.equal(spanCode.evaluateAttributes().blah, ["foo"]);
   check('<span blah="foo"></span>');
 
   R2.set([['']]);
   Deps.flush();
   // We combine `['foo']` with what evaluates to `[[['']]]`, which is non-nully.
-  test.equal(spanCode.evaluateDynamicAttributes().blah, [[['']]]);
+  test.equal(spanCode.evaluateAttributes().blah, [[['']]]);
   check('<span blah=""></span>');
 
   R2.set(null);
   Deps.flush();
   // We combine `['foo']` with `[null]`, which is nully.
-  test.equal(spanCode.evaluateDynamicAttributes().blah, ['foo']);
+  test.equal(spanCode.evaluateAttributes().blah, ['foo']);
   check('<span blah="foo"></span>');
 
   R1.set([[], []]);
@@ -607,3 +496,43 @@ Tinytest.add("ui - render - SVG", function (test) {
   test.equal(circle.parentNode.namespaceURI, "http://www.w3.org/2000/svg");
 });
 
+Tinytest.add("ui - UI.render", function (test) {
+  var div = document.createElement("DIV");
+  document.body.appendChild(div);
+
+  var R = ReactiveVar('aaa');
+  var tmpl = UI.Component.extend({
+    render: function () {
+      var self = this;
+      return SPAN(function () {
+        return (self.get('greeting') || 'Hello') + ' ' + R.get();
+      });
+    }
+  });
+
+  UI.insert(UI.render(tmpl), div);
+  UI.insert(UI.renderWithData(tmpl, {greeting: 'Bye'}), div);
+  test.equal(canonicalizeHtml(div.innerHTML),
+             "<span>Hello aaa</span><span>Bye aaa</span>");
+  R.set('bbb');
+  Deps.flush();
+  test.equal(canonicalizeHtml(div.innerHTML),
+             "<span>Hello bbb</span><span>Bye bbb</span>");
+
+  document.body.removeChild(div);
+});
+
+Tinytest.add("ui - UI.getDataContext", function (test) {
+  var div = document.createElement("DIV");
+
+  var tmpl = UI.Component.extend({
+    render: function () {
+      return SPAN();
+    }
+  });
+
+  UI.insert(UI.renderWithData(tmpl, {foo: "bar"}), div);
+  var span = $(div).children('SPAN')[0];
+  test.isTrue(span);
+  test.equal(UI.getElementData(span), {foo: "bar"});
+});

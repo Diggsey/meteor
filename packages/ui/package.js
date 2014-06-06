@@ -1,5 +1,6 @@
 Package.describe({
-  summary: "Meteor UI Components framework"
+  summary: "Meteor UI Components framework",
+  internal: true
 });
 
 Package.on_use(function (api) {
@@ -23,12 +24,12 @@ Package.on_use(function (api) {
 
   api.add_files(['attrs.js',
                  'render.js',
-                 'components.js',
+                 'builtins.js',
                  'each.js',
                  'fields.js'
                 ]);
 
-  api.add_files(['handlebars_backcompat.js'], 'client');
+  api.add_files(['handlebars_backcompat.js']);
 });
 
 Package.on_test(function (api) {

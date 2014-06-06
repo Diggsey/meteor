@@ -12,25 +12,33 @@ var lookupComponentProp = function (comp, prop) {
 };
 
 // Component that's a no-op when used as a block helper like
-// `{{#foo}}...{{/foo}}`.
-var noOpComponent = Component.extend({
-  kind: 'NoOp',
-  render: function () {
-    return this.__content;
-  }
-});
+// `{{#foo}}...{{/foo}}`. Prints a warning that it is deprecated.
+var noOpComponent = function (name) {
+  return Component.extend({
+    kind: 'NoOp',
+    render: function () {
+      Meteor._debug("{{#" + name + "}} is now unnecessary and deprecated.");
+      return this.__content;
+    }
+  });
+};
 
 // This map is searched first when you do something like `{{#foo}}` in
 // a template.
 var builtInComponents = {
   // for past compat:
-  'constant': noOpComponent,
-  'isolate': noOpComponent
+  'constant': noOpComponent("constant"),
+  'isolate': noOpComponent("isolate")
 };
 
 _extend(UI.Component, {
-  lookup: function (id) {
+  // Options:
+  //
+  // - template {Boolean} If true, look at the list of templates after
+  //   helpers and before data context.
+  lookup: function (id, opts) {
     var self = this;
+    var template = opts && opts.template;
     var result;
     var comp;
 
@@ -51,13 +59,14 @@ _extend(UI.Component, {
 
       return (compWithData ? compWithData.data : null);
 
-    } else if ((comp = findComponentWithProp(id, self))) {
+    } else if ((comp = findComponentWithHelper(id, self))) {
       // found a property or method of a component
       // (`self` or one of its ancestors)
       var result = comp[id];
 
     } else if (_.has(builtInComponents, id)) {
       return builtInComponents[id];
+
     // Code to search the global namespace for capitalized names
     // like component classes, `Template`, `StringUtils.foo`,
     // etc.
@@ -73,16 +82,17 @@ _extend(UI.Component, {
     //       return result.apply(data, arguments);
     //     return result;
     //   };
-    } else if (Handlebars._globalHelpers[id]) {
-      // Backwards compatibility for helpers defined with
-      // `Handlebars.registerHelper`. XXX what is the future pattern
-      // for this? We should definitely not put it on the Handlebars
-      // namespace.
-      result = Handlebars._globalHelpers[id];
+    } else if (template && _.has(Template, id)) {
+      return Template[id];
+
+    } else if ((result = UI._globalHelper(id))) {
+
     } else {
       // Resolve id `foo` as `data.foo` (with a "soft dot").
       return function (/*arguments*/) {
         var data = getComponentData(self);
+        if (template && !(data && _.has(data, id)))
+          throw new Error("Can't find template, helper or data context key: " + id);
         if (! data)
           return data;
         var result = data[id];
@@ -92,17 +102,20 @@ _extend(UI.Component, {
       };
     }
 
-    if (typeof result === 'function' &&! result._isEmboxedConstant) {
+    if (typeof result === 'function' && ! result._isEmboxedConstant) {
       // Wrap the function `result`, binding `this` to `getComponentData(self)`.
       // This creates a dependency when the result function is called.
       // Don't do this if the function is really just an emboxed constant.
       return function (/*arguments*/) {
         var data = getComponentData(self);
-        return result.apply(data, arguments);
+        return result.apply(data === null ? {} : data, arguments);
       };
     } else {
       return result;
     };
+  },
+  lookupTemplate: function (id) {
+    return this.lookup(id, {template: true});
   },
   get: function (id) {
     // support `this.get()` to get the data context.

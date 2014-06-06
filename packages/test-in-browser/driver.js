@@ -353,11 +353,14 @@ Template.testTable.helpers({
 
 //// Template - test_group
 
-Template.test_group.events({
+Template.test_group.helpers({
   thisWithDep: function () {
     this.dep.depend();
     return this;
-  },
+  }
+});
+
+Template.test_group.events({
   'click .groupname': function (evt) {
     changeToPath(this.path);
     // prevent enclosing groups from also triggering on
@@ -499,7 +502,7 @@ Template.event.helpers({
               var text = piece[1];
               if (which === 0 ||
                   which === (key === 'actual' ? -1 : 1)) {
-                var htmlBit = Handlebars._escape(text).replace(
+                var htmlBit = UI._escape(text).replace(
                     /\n/g, '<br>');
                 if (which !== 0)
                   htmlBit = '<ins>' + htmlBit + '</ins>';
@@ -507,7 +510,7 @@ Template.event.helpers({
               }
             });
             html += '</pre>';
-            val = new Handlebars.SafeString(html);
+            val = new Spacebars.SafeString(html);
           }
 
           // You can end up with a an undefined value, e.g. using

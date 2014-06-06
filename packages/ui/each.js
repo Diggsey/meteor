@@ -1,11 +1,5 @@
-UI.Each = Component.extend({
+UI.EachImpl = Component.extend({
   typeName: 'Each',
-  init: function () {
-    // don't keep `this.data` around so that `{{..}}` skips over this
-    // component
-    this.sequence = this.data;
-    this.data = undefined;
-  },
   render: function (modeHint) {
     var self = this;
     var content = self.__content;
@@ -16,7 +10,7 @@ UI.Each = Component.extend({
       // value we return will be static (in HTML or text)
       // or dynamic (materialized DOM).  The dynamic path
       // returns `null` and then we populate the DOM from
-      // the `parented` callback.
+      // the `materialized` callback.
       //
       // It would be much cleaner to always return the same
       // value here, and to have that value be some special
@@ -27,11 +21,11 @@ UI.Each = Component.extend({
       // a method like component.populate(domRange) and one
       // like renderStatic() or even renderHTML / renderText.
       var parts = _.map(
-        ObserveSequence.fetch(self.get('sequence')),
+        ObserveSequence.fetch(self.__sequence()),
         function (item) {
-          return content.withData(function () {
+          return content.extend({data: function () {
             return item;
-          });
+          }});
         });
 
       if (parts.length) {
@@ -44,8 +38,8 @@ UI.Each = Component.extend({
       return null;
     }
   },
-  parented: function () {
-    var self = this.__component__;
+  materialized: function () {
+    var self = this;
 
     var range = self.dom;
 
@@ -74,7 +68,7 @@ UI.Each = Component.extend({
     };
 
     this.observeHandle = ObserveSequence.observe(function () {
-      return self.get('sequence');
+      return self.__sequence();
     }, {
       addedAt: function (id, item, i, beforeId) {
         addToCount(1);
@@ -98,10 +92,10 @@ UI.Each = Component.extend({
         if (beforeId)
           beforeId = LocalCollection._idStringify(beforeId);
 
-        var renderedItem = UI.render(content.withData(dataFunc), self);
-        range.add(id, renderedItem, beforeId);
+        var renderedItem = UI.render(content.extend({data: dataFunc}), self);
+        range.add(id, renderedItem.dom, beforeId);
       },
-      removed: function (id, item) {
+      removedAt: function (id, item) {
         addToCount(-1);
         range.remove(LocalCollection._idStringify(id));
       },
@@ -110,8 +104,8 @@ UI.Each = Component.extend({
           LocalCollection._idStringify(id),
           beforeId && LocalCollection._idStringify(beforeId));
       },
-      changed: function (id, newItem) {
-        range.get(LocalCollection._idStringify(id)).data.$set(newItem);
+      changedAt: function (id, newItem, atIndex) {
+        range.get(LocalCollection._idStringify(id)).component.data.$set(newItem);
       }
     });
 
@@ -119,7 +113,7 @@ UI.Each = Component.extend({
     addToCount(0);
   },
   destroyed: function () {
-    if (this.observeHandle)
-      this.observeHandle.stop();
+    if (this.__component__.observeHandle)
+      this.__component__.observeHandle.stop();
   }
 });

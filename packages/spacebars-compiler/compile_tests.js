@@ -105,113 +105,111 @@ Tinytest.add("spacebars - compiler output", function (test) {
   run("{{#foo}}abc{{/foo}}",
       function() {
         var self = this;
-        return function() {
-          return Spacebars.include(Template.foo || self.lookup("foo"), {
-            __content: UI.block(function() {
-              var self = this;
-              return "abc";
-            })
-          });
-        };
+        return Spacebars.include(self.lookupTemplate("foo"), UI.block(function() {
+          var self = this;
+          return "abc";
+        }));
       });
 
   run("{{#if cond}}aaa{{else}}bbb{{/if}}",
       function() {
         var self = this;
-        return function() {
-          return Spacebars.include(UI.If, {
-            __content: UI.block(function() {
-              var self = this;
-              return "aaa";
-            }),
-            __elseContent: UI.block(function() {
-              var self = this;
-              return "bbb";
-            }),
-            data: self.lookup("cond")
-          });
-        };
+        return UI.If(function () {
+          return Spacebars.call(self.lookup("cond"));
+        }, UI.block(function() {
+          var self = this;
+          return "aaa";
+        }), UI.block(function() {
+          var self = this;
+          return "bbb";
+        }));
       });
 
   run("{{> foo bar}}",
       function() {
         var self = this;
-        return function() {
-          return Spacebars.include(Template.foo || self.lookup("foo"), {
-            data: self.lookup("bar")
-          });
-        };
+        return Spacebars.TemplateWith(function() {
+          return Spacebars.call(self.lookup("bar"));
+        }, UI.block(function() {
+          var self = this;
+          return Spacebars.include(self.lookupTemplate("foo"));
+        }));
       });
 
   run("{{> foo x=bar}}",
       function() {
         var self = this;
-        return function() {
-          return Spacebars.include(Template.foo || self.lookup("foo"), {
-            x: self.lookup("bar")
-          });
-        };
+        return Spacebars.TemplateWith(function() {
+          return {
+            x: Spacebars.call(self.lookup("bar"))
+          };
+        }, UI.block(function() {
+          var self = this;
+          return Spacebars.include(self.lookupTemplate("foo"));
+        }));
       });
 
   run("{{> foo bar.baz}}",
       function() {
         var self = this;
-        return function() {
-          return Spacebars.include(Template.foo || self.lookup("foo"), {
-            data: function() {
-              return Spacebars.call(Spacebars.dot(self.lookup("bar"), "baz"));
-            }
-          });
-        };
+        return Spacebars.TemplateWith(function() {
+          return Spacebars.call(Spacebars.dot(self.lookup("bar"), "baz"));
+        }, UI.block(function() {
+          var self = this;
+          return Spacebars.include(self.lookupTemplate("foo"));
+        }));
       });
 
   run("{{> foo x=bar.baz}}",
       function() {
         var self = this;
-        return function() {
-          return Spacebars.include(Template.foo || self.lookup("foo"), {
-            x: function() {
-              return Spacebars.call(Spacebars.dot(self.lookup("bar"), "baz"));
-            }
-          });
-        };
+        return Spacebars.TemplateWith(function() {
+          return {
+            x: Spacebars.call(Spacebars.dot(self.lookup("bar"), "baz"))
+          };
+        }, UI.block(function() {
+          var self = this;
+          return Spacebars.include(self.lookupTemplate("foo"));
+        }));
       });
 
   run("{{> foo bar baz}}",
-      {fail: 'Only one positional argument'});
+      function() {
+        var self = this;
+        return Spacebars.TemplateWith(function() {
+          return Spacebars.dataMustache(self.lookup("bar"), self.lookup("baz"));
+        }, UI.block(function() {
+          var self = this;
+          return Spacebars.include(self.lookupTemplate("foo"));
+        }));
+      });
 
   run("{{#foo bar baz}}aaa{{/foo}}",
       function() {
         var self = this;
-        return function() {
-          return Spacebars.include(Template.foo || self.lookup("foo"), {
-            __content: UI.block(function() {
-              var self = this;
-              return "aaa";
-            }),
-            data: function() {
-              return Spacebars.call(self.lookup("bar"), self.lookup("baz"));
-            }
-          });
-        };
+        return Spacebars.TemplateWith(function() {
+          return Spacebars.dataMustache(self.lookup("bar"), self.lookup("baz"));
+        }, UI.block(function() {
+          var self = this;
+          return Spacebars.include(self.lookupTemplate("foo"), UI.block(function() {
+            var self = this;
+            return "aaa";
+          }));
+        }));
       });
 
   run("{{#foo p.q r.s}}aaa{{/foo}}",
       function() {
         var self = this;
-        return function() {
-          return Spacebars.include(Template.foo || self.lookup("foo"), {
-            __content: UI.block(function() {
-              var self = this;
-              return "aaa";
-            }),
-            data: function() {
-              return Spacebars.call(
-                Spacebars.dot(self.lookup("p"), "q"),
-                Spacebars.dot(self.lookup("r"), "s"));
-            }
-          });
-        };
+        return Spacebars.TemplateWith(function() {
+          return Spacebars.dataMustache(Spacebars.dot(self.lookup("p"), "q"), Spacebars.dot(self.lookup("r"), "s"));
+        }, UI.block(function() {
+          var self = this;
+          return Spacebars.include(self.lookupTemplate("foo"), UI.block(function() {
+            var self = this;
+            return "aaa";
+          }));
+        }));
       });
 
   run("<a {{b}}></a>",
@@ -240,7 +238,7 @@ Tinytest.add("spacebars - compiler output", function (test) {
   run("<asdf>{{foo}}</asdf>",
       function () {
         var self = this;
-        return HTML.getTag("ASDF")(function () {
+        return HTML.getTag("asdf")(function () {
           return Spacebars.mustache(self.lookup("foo"));
         });
       });
@@ -253,4 +251,50 @@ Tinytest.add("spacebars - compiler output", function (test) {
         });
       });
 
+});
+
+Tinytest.add("spacebars - compiler errors", function (test) {
+
+  var getError = function (input) {
+    try {
+      Spacebars.compile(input);
+    } catch (e) {
+      return e.message;
+    }
+    test.fail("Didn't throw an error: " + input);
+  };
+
+  var assertStartsWith = function (a, b) {
+    test.equal(a.substring(0, b.length), b);
+  };
+
+  var isError = function (input, errorStart) {
+    assertStartsWith(getError(input), errorStart);
+  };
+
+  isError("<input></input>",
+          "Unexpected HTML close tag.  <input> should have no close tag.");
+  isError("{{#each foo}}<input></input>{{/foo}}",
+          "Unexpected HTML close tag.  <input> should have no close tag.");
+
+  isError("{{#if}}{{/if}}", "#if requires an argument");
+  isError("{{#with}}{{/with}}", "#with requires an argument");
+  isError("{{#each}}{{/each}}", "#each requires an argument");
+  isError("{{#unless}}{{/unless}}", "#unless requires an argument");
+
+  isError("{{0 0}}", "Expected IDENTIFIER");
+
+  isError("{{> foo 0 0}}",
+          "First argument must be a function");
+  isError("{{> foo 0 x=0}}",
+          "First argument must be a function");
+  isError("{{#foo 0 0}}{{/foo}}",
+          "First argument must be a function");
+  isError("{{#foo 0 x=0}}{{/foo}}",
+          "First argument must be a function");
+
+  _.each(['asdf</br>', '{{!foo}}</br>', '{{!foo}} </br>',
+          'asdf</a>', '{{!foo}}</a>', '{{!foo}} </a>'], function (badFrag) {
+            isError(badFrag, "Unexpected HTML close tag");
+          });
 });

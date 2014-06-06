@@ -26,15 +26,6 @@ var _defineNonEnum = function (tgt, name, value) {
   return tgt;
 };
 
-// Make `typeName` a non-empty string starting with an ASCII
-// letter or underscore and containing only letters, underscores,
-// and numbers.  This makes it safe to insert into evaled JS
-// code.
-var sanitizeTypeName = function (typeName) {
-  return String(typeName).replace(/^[^a-zA-Z_]|[^a-zA-Z_0-9]+/g,
-                                  '') || 'Component';
-};
-
 // Named function (like `function Component() {}` below) make
 // inspection in debuggers more descriptive. In IE, this sets the
 // value of the `Component` var in the function scope in which it's
@@ -107,20 +98,6 @@ _extend(UI, {
 Component = UI.Component;
 
 _extend(UI.Component, {
-  // If a Component has a `kind` property set via `extend`,
-  // we make it use that name when printed in Chrome Dev Tools.
-  // If you then extend this Component and don't supply any
-  // new `kind`, it should use the same value of kind (or the
-  // most specific one in the case of an `extend` chain with
-  // `kind` set at multiple points).
-  //
-  // To accomplish this, keeping performance in mind,
-  // any Component where `kind` is explicitly set
-  // also has a function property `_constr` whose source-code
-  // name is `kind`.  `extend` creates this `_constr`
-  // function, which can then be used internally as a
-  // constructor to quickly create new instances that
-  // pretty-print correctly.
   kind: "Component",
   guid: "1",
   dom: null,
@@ -133,14 +110,6 @@ _extend(UI.Component, {
   // the DOM containment parent).
   // No child pointers (except in `dom`).
   parent: null,
-
-  // Extend this component with a given data context. This is
-  // typically used in template helpers generating a dynamic
-  // template. Using this doesn't require understanding the Component
-  // OO system, which we're not document yet and may change.
-  withData: function (data) {
-    return this.extend({data: data});
-  },
 
   // create a new subkind or instance whose proto pointer
   // points to this, with additional props set.
@@ -158,12 +127,13 @@ _extend(UI.Component, {
 
     var constr;
     var constrMade = false;
-    // Any Component with a kind of "Foo" (say) is given
-    // a `._constr` of the form `function Foo() {}`.
     if (props && props.kind) {
-      constr = Function("return function " +
-                        sanitizeTypeName(props.kind) +
-                        "() {};")();
+      // If `kind` is different from super, set a constructor.
+      // We used to set the function name here so that components
+      // printed better in the console, but we took it out because
+      // of CSP (and in hopes that Chrome finally adds proper
+      // displayName support).
+      constr = function () {};
       constrMade = true;
     } else {
       constr = this._constr;
@@ -229,8 +199,21 @@ var compareElementIndex = function (a, b) {
 
 findComponentWithProp = function (id, comp) {
   while (comp) {
-    if (comp[id])
+    if (typeof comp[id] !== 'undefined')
       return comp;
+    comp = comp.parent;
+  }
+  return null;
+};
+
+findComponentWithHelper = function (id, comp) {
+  while (comp) {
+    if (comp.__helperHost) {
+      if (typeof comp[id] !== 'undefined')
+        return comp;
+      else
+        return null;
+    }
     comp = comp.parent;
   }
   return null;
@@ -320,27 +303,22 @@ UI.Component.notifyParented = function () {
       var wrappedHandler = function (event) {
         var comp = UI.DomRange.getContainingComponent(event.currentTarget);
         var data = comp && getComponentData(comp);
+        var args = _.toArray(arguments);
         updateTemplateInstance(self);
-        Deps.nonreactive(function () {
+        return Deps.nonreactive(function () {
+          // put self.templateInstance as the second argument
+          args.splice(1, 0, self.templateInstance);
           // Don't want to be in a deps context, even if we were somehow
           // triggered synchronously in an existing deps context
           // (the `blur` event can do this).
           // XXX we should probably do what Spark did and block all
           // event handling during our DOM manip.  Many apps had weird
           // unanticipated bugs until we did that.
-          esh.handler.call(data, event, self.templateInstance);
+          return esh.handler.apply(data === null ? {} : data, args);
         });
       };
 
       self.dom.on(esh.events, esh.selector, wrappedHandler);
-    });
-  }
-
-  // XXX this is an undocumented callback
-  if (self.parented) {
-    Deps.nonreactive(function () {
-      updateTemplateInstance(self);
-      self.parented.call(self.templateInstance);
     });
   }
 
@@ -355,18 +333,22 @@ UI.Component.notifyParented = function () {
   }
 };
 
-// XXX we don't really want this to be a user-visible callback,
-// it's just a particular signal we need from DomRange.
-UI.Component.removed = function () {
-  var self = this;
-  self.isDestroyed = true;
-  if (self.destroyed) {
-    Deps.nonreactive(function () {
-      updateTemplateInstance(self);
-      self.destroyed.call(self.templateInstance);
-    });
-  }
+// past compat
+UI.Component.preserve = function () {
+  Meteor._debug("The 'preserve' method on templates is now unnecessary and deprecated.");
 };
 
-// past compat
-UI.Component.preserve = function () {};
+// Gets the data context of the enclosing component that rendered a
+// given element
+UI.getElementData = function (el) {
+  var comp = UI.DomRange.getContainingComponent(el);
+  return comp && getComponentData(comp);
+};
+
+var jsUrlsAllowed = false;
+UI._allowJavascriptUrls = function () {
+  jsUrlsAllowed = true;
+};
+UI._javascriptUrlsAllowed = function () {
+  return jsUrlsAllowed;
+};

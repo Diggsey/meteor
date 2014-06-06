@@ -1,6 +1,6 @@
 DDP = {};
 
-SUPPORTED_DDP_VERSIONS = [ 'pre1' ];
+SUPPORTED_DDP_VERSIONS = [ 'pre2', 'pre1' ];
 
 LivedataTest.SUPPORTED_DDP_VERSIONS = SUPPORTED_DDP_VERSIONS;
 
@@ -31,6 +31,12 @@ MethodInvocation = function (options) {
 
   // On the server, the connection this method call came in on.
   this.connection = options.connection;
+
+  // The seed for randomStream value generation
+  this.randomSeed = options.randomSeed;
+
+  // This is set by RandomStream.get; and holds the random stream state
+  this.randomStream = null;
 };
 
 _.extend(MethodInvocation.prototype, {
@@ -115,8 +121,3 @@ stringifyDDP = function (msg) {
 // state in the DDP session. Meteor.setTimeout and friends clear
 // it. We can probably find a better way to factor this.
 DDP._CurrentInvocation = new Meteor.EnvironmentVariable;
-
-
-// This is private and a hack. It is used by autoupdate_client. We
-// should refactor. Maybe a separate 'exponential-backoff' package?
-DDP._Retry = Retry;

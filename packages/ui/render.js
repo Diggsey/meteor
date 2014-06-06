@@ -28,6 +28,7 @@ UI.Component.instantiate = function (parent) {
     data: null,
     __component__: inst
   };
+  inst.templateInstance.$ = inst.templateInstance.findAll;
 
   inst.parent = (parent || null);
 
@@ -46,6 +47,49 @@ UI.Component.render = function () {
   return null;
 };
 
+var Box = function (func, equals) {
+  var self = this;
+
+  self.func = func;
+  self.equals = equals;
+
+  self.curResult = null;
+
+  self.dep = new Deps.Dependency;
+
+  self.resultComputation = Deps.nonreactive(function () {
+    return Deps.autorun(function (c) {
+      var func = self.func;
+
+      var newResult = func();
+
+      if (! c.firstRun) {
+        var equals = self.equals;
+        var oldResult = self.curResult;
+
+        if (equals ? equals(newResult, oldResult) :
+            newResult === oldResult) {
+          // same as last time
+          return;
+        }
+      }
+
+      self.curResult = newResult;
+      self.dep.changed();
+    });
+  });
+};
+
+Box.prototype.stop = function () {
+  this.resultComputation.stop();
+};
+
+Box.prototype.get = function () {
+  if (Deps.active && ! this.resultComputation.stopped)
+    this.dep.depend();
+
+  return this.curResult;
+};
 
 // Takes a reactive function (call it `inner`) and returns a reactive function
 // `outer` which is equivalent except in its reactive behavior.  Specifically,
@@ -82,69 +126,19 @@ UI.Component.render = function () {
 //
 UI.emboxValue = function (funcOrValue, equals) {
   if (typeof funcOrValue === 'function') {
+
     var func = funcOrValue;
+    var box = new Box(func, equals);
 
-    var curResult = null;
-    // There's one shared Dependency and Computation for all callers of
-    // our box function.  It gets kicked off if necessary, and when
-    // there are no more dependents, it gets stopped to avoid leaking
-    // memory.
-    var resultDep = null;
-    var computation = null;
-
-    return function () {
-      if (! computation) {
-        if (! Deps.active) {
-          // Not in a reactive context.  Just call func, and don't start a
-          // computation if there isn't one running already.
-          return func();
-        }
-
-        // No running computation, so kick one off.  Since this computation
-        // will be shared, avoid any association with the current computation
-        // by using `Deps.nonreactive`.
-        resultDep = new Deps.Dependency;
-
-        computation = Deps.nonreactive(function () {
-          return Deps.autorun(function (c) {
-            var oldResult = curResult;
-            curResult = func();
-            if (! c.firstRun) {
-              if (! (equals ? equals(curResult, oldResult) :
-                     curResult === oldResult))
-                resultDep.changed();
-            }
-          });
-        });
-      }
-
-      if (Deps.active) {
-        var isNew = resultDep.depend();
-        if (isNew) {
-          // For each new dependent, schedule a task for after that dependent's
-          // invalidation time and the subsequent flush. The task checks
-          // whether the computation should be torn down.
-          Deps.onInvalidate(function () {
-            if (resultDep && ! resultDep.hasDependents()) {
-              Deps.afterFlush(function () {
-                // use a second afterFlush to bump ourselves to the END of the
-                // flush, after computation re-runs have had a chance to
-                // re-establish their connections to our computation.
-                Deps.afterFlush(function () {
-                  if (resultDep && ! resultDep.hasDependents()) {
-                    computation.stop();
-                    computation = null;
-                    resultDep = null;
-                  }
-                });
-              });
-            }
-          });
-        }
-      }
-
-      return curResult;
+    var f = function () {
+      return box.get();
     };
+
+    f.stop = function () {
+      box.stop();
+    };
+
+    return f;
 
   } else {
     var value = funcOrValue;
@@ -157,15 +151,34 @@ UI.emboxValue = function (funcOrValue, equals) {
 };
 
 
+UI.namedEmboxValue = function (name, funcOrValue, equals) {
+  if (! Deps.active) {
+    var f = UI.emboxValue(funcOrValue, equals);
+    f.stop();
+    return f;
+  }
+
+  var c = Deps.currentComputation;
+  if (! c[name])
+    c[name] = UI.emboxValue(funcOrValue, equals);
+
+  return c[name];
+};
+
 ////////////////////////////////////////
 
-UI.insert = UI.DomRange && UI.DomRange.insert;
+UI.insert = function (renderedTemplate, parentElement, nextNode) {
+  if (! renderedTemplate.dom)
+    throw new Error("Expected template rendered with UI.render");
+
+  UI.DomRange.insert(renderedTemplate.dom, parentElement, nextNode);
+};
 
 // Insert a DOM node or DomRange into a DOM element or DomRange.
 //
 // One of three things happens depending on what needs to be inserted into what:
 // - `range.add` (anything into DomRange)
-// - `UI.insert` (DomRange into element)
+// - `UI.DomRange.insert` (DomRange into element)
 // - `elem.insertBefore` (node into element)
 //
 // The optional `before` argument is an existing node or id to insert before in
@@ -174,87 +187,93 @@ var insert = function (nodeOrRange, parent, before) {
   if (! parent)
     throw new Error("Materialization parent required");
 
-  if (parent.component && parent.component.dom) {
-    // parent is DomRange; add node or range
-    parent.add(nodeOrRange.component || nodeOrRange, before);
-  } else if (nodeOrRange.component && nodeOrRange.component.dom) {
+  if (parent instanceof UI.DomRange) {
+    parent.add(nodeOrRange, before);
+  } else if (nodeOrRange instanceof UI.DomRange) {
     // parent is an element; inserting a range
-    UI.insert(nodeOrRange.component, parent, before);
+    UI.DomRange.insert(nodeOrRange, parent, before);
   } else {
     // parent is an element; inserting an element
     parent.insertBefore(nodeOrRange, before || null); // `null` for IE
   }
 };
 
-// Update attributes on `elem` to the dictionary `attrs`, using the
-// dictionary of existing `handlers` if provided.
-//
-// Values in the `attrs` dictionary are in pseudo-DOM form -- a string,
-// CharRef, or array of strings and CharRefs -- but they are passed to
-// the AttributeHandler in string form.
-var updateAttributes = function(elem, newAttrs, handlers) {
-
-  if (handlers) {
-    for (var k in handlers) {
-      if (! newAttrs.hasOwnProperty(k)) {
-        // remove attributes (and handlers) for attribute names
-        // that don't exist as keys of `newAttrs` and so won't
-        // be visited when traversing it.  (Attributes that
-        // exist in the `newAttrs` object but are `null`
-        // are handled later.)
-        var handler = handlers[k];
-        var oldValue = handler.value;
-        handler.value = null;
-        handler.update(elem, oldValue, null);
-        delete handlers[k];
-      }
-    }
-  }
-
-  for (var k in newAttrs) {
-    var handler = null;
-    var oldValue;
-    var value = newAttrs[k];
-    if ((! handlers) || (! handlers.hasOwnProperty(k))) {
-      if (value !== null) {
-        // make new handler
-        handler = makeAttributeHandler(elem, k, value);
-        if (handlers)
-          handlers[k] = handler;
-        oldValue = null;
-      }
-    } else {
-      handler = handlers[k];
-      oldValue = handler.value;
-    }
-    if (handler) {
-      handler.value = value;
-      handler.update(elem, oldValue, value);
-      if (value === null)
-        delete handlers[k];
-    }
-  }
-};
-
 UI.render = function (kind, parentComponent) {
   if (kind.isInited)
     throw new Error("Can't render component instance, only component kind");
-  var inst = kind.instantiate(parentComponent);
 
-  var content = content = (inst.render && inst.render());
+  var inst, content, range;
 
-  var range = new UI.DomRange(inst);
+  Deps.nonreactive(function () {
+
+    inst = kind.instantiate(parentComponent);
+
+    content = (inst.render && inst.render());
+
+    range = new UI.DomRange;
+    inst.dom = range;
+    range.component = inst;
+
+  });
+
   materialize(content, range, null, inst);
 
-  inst.removed = function () {
+  range.removed = function () {
     inst.isDestroyed = true;
     if (inst.destroyed) {
-      updateTemplateInstance(inst);
-      inst.destroyed.call(inst.templateInstance);
+      Deps.nonreactive(function () {
+        updateTemplateInstance(inst);
+        inst.destroyed.call(inst.templateInstance);
+      });
     }
   };
 
   return inst;
+};
+
+UI.renderWithData = function (kind, data, parentComponent) {
+  if (! UI.isComponent(kind))
+    throw new Error("Component required here");
+  if (kind.isInited)
+    throw new Error("Can't render component instance, only component kind");
+  if (typeof data === 'function')
+    throw new Error("Data argument can't be a function");
+
+  return UI.render(kind.extend({data: function () { return data; }}),
+                   parentComponent);
+};
+
+var contentEquals = function (a, b) {
+  if (a instanceof HTML.Raw) {
+    return (b instanceof HTML.Raw) && (a.value === b.value);
+  } else if (a == null) {
+    return (b == null);
+  } else {
+    return (a === b) &&
+      ((typeof a === 'number') || (typeof a === 'boolean') ||
+       (typeof a === 'string'));
+  }
+};
+
+UI.InTemplateScope = function (tmplInstance, content) {
+  if (! (this instanceof UI.InTemplateScope))
+    // called without `new`
+    return new UI.InTemplateScope(tmplInstance, content);
+
+  var parentPtr = tmplInstance.parent;
+  if (parentPtr.__isTemplateWith)
+    parentPtr = parentPtr.parent;
+
+  this.parentPtr = parentPtr;
+  this.content = content;
+};
+
+UI.InTemplateScope.prototype.toHTML = function (parentComponent) {
+  return HTML.toHTML(this.content, this.parentPtr);
+};
+
+UI.InTemplateScope.prototype.toText = function (textMode, parentComponent) {
+  return HTML.toText(this.content, textMode, this.parentPtr);
 };
 
 // Convert the pseudoDOM `node` into reactive DOM nodes and insert them
@@ -276,25 +295,41 @@ var materialize = function (node, parent, before, parentComponent) {
   } else if (typeof node === 'function') {
 
     var range = new UI.DomRange;
+    var lastContent = null;
     var rangeUpdater = Deps.autorun(function (c) {
-      if (! c.firstRun)
-        range.removeAll();
-
       var content = node();
+      // normalize content a little, for easier comparison
+      if (HTML.isNully(content))
+        content = null;
+      else if ((content instanceof Array) && content.length === 1)
+        content = content[0];
 
-      Deps.nonreactive(function () {
+      // update if content is different from last time
+      if (! contentEquals(content, lastContent)) {
+        lastContent = content;
+
+        if (! c.firstRun)
+          range.removeAll();
+
         materialize(content, range, null, parentComponent);
-      });
+      }
     });
     range.removed = function () {
       rangeUpdater.stop();
+      if (node.stop)
+        node.stop();
     };
+    // XXXX HACK
+    if (Deps.active && node.stop) {
+      Deps.onInvalidate(function () {
+        node.stop();
+      });
+    }
     insert(range, parent, before);
   } else if (node instanceof HTML.Tag) {
-    var tagName = HTML.properCaseTagName(node.tagName);
+    var tagName = node.tagName;
     var elem;
-    if (HTML.isKnownSVGElement(tagName) && (! HTML.isKnownElement(tagName)) &&
-        document.createElementNS) {
+    if (HTML.isKnownSVGElement(tagName) && document.createElementNS) {
       elem = document.createElementNS('http://www.w3.org/2000/svg', tagName);
     } else {
       elem = document.createElement(node.tagName);
@@ -302,33 +337,35 @@ var materialize = function (node, parent, before, parentComponent) {
 
     var rawAttrs = node.attrs;
     var children = node.children;
-    if (node.tagName === 'TEXTAREA') {
+    if (node.tagName === 'textarea') {
       rawAttrs = (rawAttrs || {});
       rawAttrs.value = children;
       children = [];
     };
 
     if (rawAttrs) {
-      var attrUpdater = Deps.autorun(function (c) {
-        if (! c.handlers)
-          c.handlers = {};
+      var attrComp = Deps.autorun(function (c) {
+        var attrUpdater = c.updater;
+        if (! attrUpdater) {
+          attrUpdater = c.updater = new ElementAttributesUpdater(elem);
+        }
 
         try {
-          var attrs = HTML.evaluateDynamicAttributes(rawAttrs, parentComponent);
+          var attrs = HTML.evaluateAttributes(rawAttrs, parentComponent);
           var stringAttrs = {};
           if (attrs) {
             for (var k in attrs) {
               stringAttrs[k] = HTML.toText(attrs[k], HTML.TEXTMODE.STRING,
                                            parentComponent);
             }
-            updateAttributes(elem, stringAttrs, c.handlers);
+            attrUpdater.update(stringAttrs);
           }
         } catch (e) {
           reportUIException(e);
         }
       });
       UI.DomBackend.onRemoveElement(elem, function () {
-        attrUpdater.stop();
+        attrComp.stop();
       });
     }
     materialize(children, elem, null, parentComponent);
@@ -337,6 +374,11 @@ var materialize = function (node, parent, before, parentComponent) {
   } else if (typeof node.instantiate === 'function') {
     // component
     var instance = UI.render(node, parentComponent);
+
+    // Call internal callback, which may take advantage of the current
+    // Deps computation.
+    if (instance.materialized)
+      instance.materialized();
 
     insert(instance.dom, parent, before);
   } else if (node instanceof HTML.CharRef) {
@@ -349,8 +391,10 @@ var materialize = function (node, parent, before, parentComponent) {
     var htmlNodes = UI.DomBackend.parseHTML(node.value);
     for (var i = 0; i < htmlNodes.length; i++)
       insert(htmlNodes[i], parent, before);
-  } else if (node instanceof HTML.Special) {
+  } else if (Package['html-tools'] && (node instanceof Package['html-tools'].HTMLTools.Special)) {
     throw new Error("Can't materialize Special tag, it's just an intermediate rep");
+  } else if (node instanceof UI.InTemplateScope) {
+    materialize(node.content, parent, before, node.parentPtr);
   } else {
     // can't get here
     throw new Error("Unexpected node in htmljs: " + node);
@@ -370,7 +414,8 @@ UI.body = UI.Component.extend({
     return this.contentParts;
   },
   // XXX revisit how body works.
-  INSTANTIATED: false
+  INSTANTIATED: false,
+  __helperHost: true
 });
 
 UI.block = function (renderFunc) {

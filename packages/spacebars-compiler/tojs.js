@@ -26,7 +26,9 @@ toObjectLiteralKey = function (k) {
 
 // This method is generic, i.e. it can be transplanted to non-Tags
 // and it will still work by accessing `this.tagName`, `this.attrs`,
-// and `this.children`.
+// and `this.children`.  It's ok if `this.attrs` has content that
+// isn't allowed in an attribute (this feature is used by
+// HTMLTools.Special.prototype.toJS).
 HTML.Tag.prototype.toJS = function (options) {
   var argStrs = [];
   if (this.attrs) {
@@ -36,18 +38,23 @@ HTML.Tag.prototype.toJS = function (options) {
         kvStrs.push(toObjectLiteralKey(k) + ': ' +
                     HTML.toJS(this.attrs[k], options));
     }
-    argStrs.push('{' + kvStrs.join(', ') + '}');
+    if (kvStrs.length)
+      argStrs.push('{' + kvStrs.join(', ') + '}');
   }
 
   for (var i = 0; i < this.children.length; i++) {
     argStrs.push(HTML.toJS(this.children[i], options));
   }
 
-  var tagSymbol = this.tagName;
-  if ((this instanceof HTML.Tag) && ! HTML.isTagEnsured(tagSymbol))
-    tagSymbol = 'HTML.getTag(' + toJSLiteral(tagSymbol) + ')';
+  var tagName = this.tagName;
+  var tagSymbol;
+  if (! (this instanceof HTML.Tag))
+    // a CharRef or Comment, say
+    tagSymbol = (tagName.indexOf('.') >= 0 ? tagName : 'HTML.' + tagName);
+  else if (! HTML.isTagEnsured(tagName))
+    tagSymbol = 'HTML.getTag(' + toJSLiteral(tagName) + ')';
   else
-    tagSymbol = 'HTML.' + tagSymbol;
+    tagSymbol = 'HTML.' + HTML.getSymbolName(tagName);
 
   return tagSymbol + '(' + argStrs.join(', ') + ')';
 };

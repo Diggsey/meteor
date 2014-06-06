@@ -7,8 +7,13 @@ canonicalizeHtml = function(html) {
   // make all tags lowercase
   h = h.replace(/<\/?(\w+)/g, function(m) {
     return m.toLowerCase(); });
-  // kill \n and \r characters
-  h = h.replace(/[\n\r]/g, '');
+  // replace whitespace sequences with spaces
+  h = h.replace(/\s+/g, ' ');
+  // Trim leading and trailing whitespace
+  h = h.replace(/^\s+|\s+$/g, '');
+  // remove whitespace before and after tags
+  h = h.replace(/\s*(<\/?\w.*?>)\s*/g, function (m, tag) {
+    return tag; });
   // make tag attributes uniform
   h = h.replace(/<(\w+)\s+(.*?)\s*>/g, function(m, tagName, attrs) {
     // Drop expando property used by Sizzle (part of jQuery) which leaks into
@@ -16,6 +21,10 @@ canonicalizeHtml = function(html) {
     attrs = attrs.replace(/sizcache[0-9]+="[^"]*"/g, ' ');
     // Similarly for expando properties used by jQuery to track data.
     attrs = attrs.replace(/jQuery[0-9]+="[0-9]+"/g, ' ');
+    // Similarly for expando properties used to DomBackend to keep
+    // track of callbacks to fire when an element is removed
+    attrs = attrs.replace(/\$meteor_ui_removal_callbacks="[^"]*"/g, ' ');
+
     attrs = attrs.replace(/\s*=\s*/g, '=');
     attrs = attrs.replace(/^\s+/g, '');
     attrs = attrs.replace(/\s+$/g, '');
@@ -39,8 +48,12 @@ canonicalizeHtml = function(html) {
       if (! attrList[i])
         continue;
       var a = attrList[i].split('=');
-        if (a.length < 2)
-          a.push(a[0]); // things like checked=checked, in theory
+
+      // In IE8, attributes whose value is "" appear
+      // without the '=' sign altogether.
+      if (a.length < 2)
+        a.push("");
+
       var key = a[0];
       // Drop another expando property used by Sizzle.
       if (key === 'sizset')

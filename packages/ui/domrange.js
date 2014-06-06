@@ -3,7 +3,6 @@
 // - UI hooks (expose, test)
 // - Quick remove/add (mark "leaving" members; needs UI hooks)
 // - Event removal on removal
-// - Event moving on TBODY move
 
 var DomBackend = UI.DomBackend;
 
@@ -98,9 +97,6 @@ var rangeParented = function (range) {
       // element.  This is really just for IE 9+
       // TextNode GC issues, but we can't do reliable
       // feature detection (i.e. bug detection).
-      // Note that because we keep a direct pointer to
-      // `parentNode.$_uiranges`, it doesn't matter
-      // if we are reparented (e.g. wrapped in a TBODY).
       var parentNode = range.parentNode();
       var rangeDict = (
         parentNode.$_uiranges ||
@@ -114,15 +110,15 @@ var rangeParented = function (range) {
       });
     }
 
-    if (range.component.notifyParented)
+    if (range.component && range.component.notifyParented)
       range.component.notifyParented();
 
     // recurse on member ranges
     var members = range.members;
     for (var k in members) {
       var mem = members[k];
-      if ('dom' in mem)
-        rangeParented(mem.dom);
+      if (mem instanceof DomRange)
+        rangeParented(mem);
     }
   }
 };
@@ -137,8 +133,8 @@ var rangeRemoved = function (range) {
     // XXX clean up events in $_uievents
 
     // notify component of removal
-    if (range.component.removed)
-      range.component.removed();
+    if (range.removed)
+      range.removed();
 
     membersRemoved(range);
   }
@@ -148,7 +144,7 @@ var nodeRemoved = function (node, viaBackend) {
   if (node.nodeType === 1) { // ELEMENT
     var comps = DomRange.getComponents(node);
     for (var i = 0, N = comps.length; i < N; i++)
-      rangeRemoved(comps[i].dom);
+      rangeRemoved(comps[i]);
 
     if (! viaBackend)
       DomBackend.removeElement(node);
@@ -159,8 +155,8 @@ var membersRemoved = function (range) {
   var members = range.members;
   for (var k in members) {
     var mem = members[k];
-    if ('dom' in mem)
-      rangeRemoved(mem.dom);
+    if (mem instanceof DomRange)
+      rangeRemoved(mem);
     else
       nodeRemoved(mem);
   }
@@ -168,34 +164,16 @@ var membersRemoved = function (range) {
 
 var nextGuid = 1;
 
-var DomRange = function (component) {
-  // This code supports IE 8 if `createTextNode` is changed
-  // to `createComment`.  What we really should do is:
-  // - use comments in IE 8
-  // - use TextNodes in all other browsers
-  // - keep a list of all DomRanges to avoid IE 9+ GC of
-  //   TextNodes; this will probably help DomRange removal
-  //   detection too.
+var DomRange = function () {
   var start = createMarkerNode();
   var end = createMarkerNode();
   var fragment = DomBackend.newFragment([start, end]);
   fragment.$_uiIsOffscreen = true;
 
-  if (component) {
-    this.component = component;
-    component.dom = this;
-    // must NOT set `this.dom` to anything (even `null`)
-    // in this case.
-  } else {
-    // self-host
-    this.component = this;
-    this.dom = this;
-  }
-
   this.start = start;
   this.end = end;
-  start.$ui = this.component;
-  end.$ui = this.component;
+  start.$ui = this;
+  end.$ui = this;
 
   this.members = {};
   this.nextMemberId = 1;
@@ -296,9 +274,9 @@ _extend(DomRange.prototype, {
     var members = this.members;
     if (members.hasOwnProperty(id)) {
       var oldMember = members[id];
-      if ('dom' in oldMember) {
+      if (oldMember instanceof DomRange) {
         // range, does it still exist?
-        var oldRange = oldMember.dom;
+        var oldRange = oldMember;
         if (oldRange.start.parentNode !== parentNode) {
           delete members[id];
           oldRange.owner = null;
@@ -318,18 +296,11 @@ _extend(DomRange.prototype, {
       }
     }
 
-    if ('dom' in newMember) {
-      if (! newMember.dom)
-        throw new Error("Component not built");
+    if (newMember instanceof DomRange) {
       // Range
-      var range = newMember.dom;
-      range.owner = this.component;
+      var range = newMember;
+      range.owner = this;
       var nodes = range.getNodes();
-
-      if (tbodyFixNeeded(nodes, parentNode))
-        // may cause a refresh(); important that the
-        // member isn't added yet
-        parentNode = moveWithOwnersIntoTbody(this);
 
       members[id] = newMember;
       for (var i = 0; i < nodes.length; i++)
@@ -345,12 +316,7 @@ _extend(DomRange.prototype, {
       // can't attach `$ui` to a TextNode in IE 8, so
       // don't bother on any browser.
       if (node.nodeType !== 3)
-        node.$ui = this.component;
-
-      if (tbodyFixNeeded(node, parentNode))
-        // may cause a refresh(); important that the
-        // member isn't added yet
-        parentNode = moveWithOwnersIntoTbody(this);
+        node.$ui = this;
 
       members[id] = newMember;
       insertNode(node, parentNode, nextNode);
@@ -384,14 +350,14 @@ _extend(DomRange.prototype, {
     if (! parentNode)
       return;
 
-    if ('dom' in member) {
+    if (member instanceof DomRange) {
       // Range
-      var range = member.dom;
+      var range = member;
       range.owner = null;
       // Don't mind if range (specifically its start
       // marker) has been removed already.
       if (range.start.parentNode === parentNode)
-        member.dom.remove();
+        member.remove();
     } else {
       // Node
       var node = member;
@@ -418,9 +384,9 @@ _extend(DomRange.prototype, {
     if (! parentNode)
       return;
 
-    if ('dom' in member) {
+    if (member instanceof DomRange) {
       // Range
-      var range = member.dom;
+      var range = member;
       // Don't mind if range (specifically its start marker)
       // has been removed already.
       if (range.start.parentNode === parentNode) {
@@ -458,9 +424,9 @@ _extend(DomRange.prototype, {
     for (var k in members) {
       // mem is a component (hosting a Range) or a Node
       var mem = members[k];
-      if ('dom' in mem) {
+      if (mem instanceof DomRange) {
         // Range
-        var range = mem.dom;
+        var range = mem;
         if (range.start.parentNode === parentNode) {
           rangeFunc && rangeFunc(range); // still there
         } else {
@@ -517,6 +483,7 @@ _extend(DomRange.prototype, {
   // see `getInsertionPoint`.  Adding multiple members
   // at once using `add(array)` is faster.
   refresh: function () {
+
     var parentNode = this.parentNode();
     if (! parentNode)
       return;
@@ -579,14 +546,13 @@ _extend(DomRange.prototype, {
 
         var nodeOwner;
         if (node.$ui &&
-            (nodeOwner = node.$ui.dom) &&
+            (nodeOwner = node.$ui) &&
             ((nodeOwner === this &&
               node !== this.start &&
               node !== this.end &&
               isSignificantNode(node)) ||
              (nodeOwner !== this &&
-              nodeOwner.owner &&
-              nodeOwner.owner.dom === this &&
+              nodeOwner.owner === this &&
               nodeOwner.start === node))) {
           // found a member range or node
           // (excluding "insignificant" empty text nodes,
@@ -602,10 +568,10 @@ _extend(DomRange.prototype, {
               // can't attach `$ui` to a TextNode in IE 8, so
               // don't bother on any browser.
               if (n.nodeType !== 3)
-                n.$ui = this.component;
+                n.$ui = this;
             }
           }
-          if (node.$ui.dom === this) {
+          if (node.$ui === this) {
             // Node
             firstNode = (firstNode || node);
             lastNode = node;
@@ -614,7 +580,7 @@ _extend(DomRange.prototype, {
             // skip it and include its nodes in
             // firstNode/lastNode.
             firstNode = (firstNode || node);
-            node = node.$ui.dom.end;
+            node = node.$ui.end;
             lastNode = node;
           }
         }
@@ -626,12 +592,12 @@ _extend(DomRange.prototype, {
       // nodes as well.
       for (var n;
            (n = firstNode.previousSibling) &&
-           (n.$ui && n.$ui.dom === this ||
+           (n.$ui && n.$ui === this ||
             _contains(textNodes, n));)
         firstNode = n;
       for (var n;
            (n = lastNode.nextSibling) &&
-           (n.$ui && n.$ui.dom === this ||
+           (n.$ui && n.$ui === this ||
             _contains(textNodes, n));)
         lastNode = n;
       // adjust our start/end pointers
@@ -665,9 +631,9 @@ _extend(DomRange.prototype, {
     beforeId = ' ' + beforeId;
     var mem = members[beforeId];
 
-    if ('dom' in mem) {
+    if (mem instanceof DomRange) {
       // Range
-      var range = mem.dom;
+      var range = mem;
       if (range.start.parentNode === parentNode) {
         // still there
         range.refresh();
@@ -723,28 +689,23 @@ DomRange.refresh = function (element) {
   var comps = DomRange.getComponents(element);
 
   for (var i = 0, N = comps.length; i < N; i++)
-    comps[i].dom.refresh();
+    comps[i].refresh();
 };
 
 DomRange.getComponents = function (element) {
   var topLevelComps = [];
   for (var n = element.firstChild;
        n; n = n.nextSibling) {
-    if (n.$ui && n === n.$ui.dom.start &&
-        ! n.$ui.dom.owner)
+    if (n.$ui && n === n.$ui.start &&
+        ! n.$ui.owner)
       topLevelComps.push(n.$ui);
   }
   return topLevelComps;
 };
 
 // `parentNode` must be an ELEMENT, not a fragment
-DomRange.insert = function (component, parentNode, nextNode) {
-  var range = component.dom;
-  if (! range)
-    throw new Error("Expected a component with a DomRange");
+DomRange.insert = function (range, parentNode, nextNode) {
   var nodes = range.getNodes();
-  if (tbodyFixNeeded(nodes, parentNode))
-    parentNode = makeOrFindTbody(parentNode, nextNode);
   for (var i = 0; i < nodes.length; i++)
     insertNode(nodes[i], parentNode, nextNode);
   rangeParented(range);
@@ -753,66 +714,15 @@ DomRange.insert = function (component, parentNode, nextNode) {
 DomRange.getContainingComponent = function (element) {
   while (element && ! element.$ui)
     element = element.parentNode;
-  return (element && element.$ui) || null;
-};
 
-///// TBODY FIX for compatibility with jQuery.
-//
-// Because people might use jQuery from UI hooks, and
-// jQuery is unable to do $(myTable).append(myTR) without
-// adding a TBODY (for historical reasons), we move any DomRange
-// that gains a TR, and its immediately enclosing DomRanges,
-// into a TBODY.
-//
-// See http://www.quora.com/David-Greenspan/Posts/The-Great-TBODY-Debacle
-var tbodyFixNeeded = function (childOrChildren, parent) {
-  if (parent.nodeName !== 'TABLE')
-    return false;
+  var range = (element && element.$ui);
 
-  if (isArray(childOrChildren)) {
-    var foundTR = false;
-    for (var i = 0, N = childOrChildren.length; i < N; i++) {
-      var n = childOrChildren[i];
-      if (n.nodeType === 1 && n.nodeName === 'TR') {
-        foundTR = true;
-        break;
-      }
-    }
-    if (! foundTR)
-      return false;
-  } else {
-    var n = childOrChildren;
-    if (! (n.nodeType === 1 && n.nodeName === 'TR'))
-      return false;
+  while (range) {
+    if (range.component)
+      return range.component;
+    range = range.owner;
   }
-
-  return true;
-};
-
-var makeOrFindTbody = function (parent, next) {
-  // we have a TABLE > TR situation
-  var tbody = parent.getElementsByTagName('tbody')[0];
-  if (! tbody) {
-    tbody = parent.ownerDocument.createElement("tbody");
-    parent.insertBefore(tbody, next || null);
-  }
-  return tbody;
-};
-
-var moveWithOwnersIntoTbody = function (range) {
-  while (range.owner)
-    range = range.owner.dom;
-
-  var nodes = range.getNodes(); // causes refresh
-  var tbody = makeOrFindTbody(range.parentNode(),
-                              range.end.nextSibling);
-  for (var i = 0; i < nodes.length; i++)
-    tbody.appendChild(nodes[i]);
-
-  // XXX complete the reparenting by moving event
-  // HandlerRecs of `range`.
-
-  return tbody;
+  return null;
 };
 
 ///// FIND BY SELECTOR
@@ -826,9 +736,9 @@ DomRange.prototype.contains = function (compOrNode) {
     return false;
 
   var range;
-  if ('dom' in compOrNode) {
+  if (compOrNode instanceof DomRange) {
     // Component
-    range = compOrNode.dom;
+    range = compOrNode;
     var pn = range.parentNode();
     if (! pn)
       return false;
@@ -849,14 +759,14 @@ DomRange.prototype.contains = function (compOrNode) {
     while (node.parentNode !== parentNode)
       node = node.parentNode;
 
-    range = node.$ui && node.$ui.dom;
+    range = node.$ui;
   }
 
   // Now see if `range` is truthy and either `this`
   // or an immediate subrange
 
   while (range && range !== this)
-    range = range.owner && range.owner.dom;
+    range = range.owner;
 
   return range === this;
 };
@@ -960,9 +870,9 @@ var HandlerRec = function (elem, type, selector, handler, $ui) {
       if ((! h.selector) && evt.currentTarget !== evt.target)
         // no selector means only fire on target
         return;
-      if (! h.$ui.dom.contains(evt.currentTarget))
+      if (! h.$ui.contains(evt.currentTarget))
         return;
-      return h.handler.call(h.$ui, evt);
+      return h.handler.apply(h.$ui, arguments);
     };
   })(this);
 
@@ -1015,7 +925,7 @@ HandlerRec.prototype.bind = function () {
   // correct mode and turning off one or the other handlers.
   if (this.mode !== EVENT_MODE_BUBBLING) {
     DomBackend.bindEventCapturer(
-      this.elem, this.type,
+      this.elem, this.type, this.selector || '*',
       this.capturingHandler);
   }
 
@@ -1075,17 +985,16 @@ DomRange.prototype.on = function (events, selector, handler) {
     }
     var handlerList = info.handlers;
     var handlerRec = new HandlerRec(
-      parentNode, type, selector, handler, this.component);
+      parentNode, type, selector, handler, this);
     handlerRec.bind();
     handlerList.push(handlerRec);
     // move handlers of enclosing ranges to end
-    for (var r = (this.owner && this.owner.dom);
-         r; r = (r.owner && r.owner.dom)) {
+    for (var r = this.owner; r; r = r.owner) {
       // r is an enclosing DomRange
       for (var j = 0, Nj = handlerList.length;
            j < Nj; j++) {
         var h = handlerList[j];
-        if (h.$ui && h.$ui.dom === r) {
+        if (h.$ui === r) {
           h.unbind();
           h.bind();
           handlerList.splice(j, 1); // remove handlerList[j]

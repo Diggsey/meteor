@@ -1,4 +1,21 @@
+var warn = function () {
+  if (ObserveSequence._suppressWarnings) {
+    ObserveSequence._suppressWarnings--;
+  } else {
+    if (typeof console !== 'undefined' && console.warn)
+      console.warn.apply(console, arguments);
+
+    ObserveSequence._loggedWarnings++;
+  }
+};
+
+var idStringify = LocalCollection._idStringify;
+var idParse = LocalCollection._idParse;
+
 ObserveSequence = {
+  _suppressWarnings: 0,
+  _loggedWarnings: 0,
+
   // A mechanism similar to cursor.observe which receives a reactive
   // function returning a sequence type and firing appropriate callbacks
   // when the value changes.
@@ -14,8 +31,8 @@ ObserveSequence = {
   //     _id fields.  Specifically:
   //
   //     * addedAt(id, item, atIndex, beforeId)
-  //     * changed(id, newItem, oldItem)
-  //     * removed(id, oldItem)
+  //     * changedAt(id, newItem, oldItem, atIndex)
+  //     * removedAt(id, oldItem, atIndex)
   //     * movedTo(id, item, fromIndex, toIndex, beforeId)
   //
   // @returns {Object(stop: Function)} call 'stop' on the return value
@@ -24,9 +41,9 @@ ObserveSequence = {
   // We don't make any assumptions about our ability to compare sequence
   // elements (ie, we don't assume EJSON.equals works; maybe there is extra
   // state/random methods on the objects) so unlike cursor.observe, we may
-  // sometimes call changed() when nothing actually changed.
+  // sometimes call changedAt() when nothing actually changed.
   // XXX consider if we *can* make the stronger assumption and avoid
-  //     no-op changed calls (in some cases?)
+  //     no-op changedAt calls (in some cases?)
   //
   // XXX currently only supports the callbacks used by our
   // implementation of {{#each}}, but this can be expanded.
@@ -41,12 +58,23 @@ ObserveSequence = {
     var lastSeq = null;
     var activeObserveHandle = null;
 
-    // `lastSeqArray` contains the previous value of the sequence
-    // we're observing. It is an array of objects with `_id` and
-    // `item` fields.  `item` is the element in the array, or the
-    // document in the cursor.  `_id` is set from `item._id` if
-    // available (and must be unique), or generated uniquely
-    // otherwise.
+    // 'lastSeqArray' contains the previous value of the sequence
+    // we're observing. It is an array of objects with '_id' and
+    // 'item' fields.  'item' is the element in the array, or the
+    // document in the cursor.
+    //
+    // '_id' is whichever of the following is relevant, unless it has
+    // already appeared -- in which case it's randomly generated.
+    //
+    // * if 'item' is an object:
+    //   * an '_id' field, if present
+    //   * otherwise, the index in the array
+    //
+    // * if 'item' is a number or string, use that value
+    //
+    // XXX this can be generalized by allowing {{#each}} to accept a
+    // general 'key' argument which could be a function, a dotted
+    // field name, or the special @index value.
     var lastSeqArray = []; // elements are objects of form {_id, item}
     var computation = Deps.autorun(function () {
       var seq = sequenceFunc();
@@ -69,42 +97,58 @@ ObserveSequence = {
           seqArray = [];
           diffArray(lastSeqArray, seqArray, callbacks);
         } else if (seq instanceof Array) {
-          // XXX if id is not set, we just set it randomly for now.  We
-          // can do better so that diffing the arrays ["A", "B"] and
-          // ["A"] doesn't cause "A" to be removed.
-          seqArray = _.map(seq, function (doc, i) {
-            return { _id: (doc && doc._id) || Random.id(), item: doc };
+          var idsUsed = {};
+          seqArray = _.map(seq, function (item, index) {
+            var id;
+            if (typeof item === 'string') {
+              // ensure not empty, since other layers (eg DomRange) assume this as well
+              id = "-" + item;
+            } else if (typeof item === 'number' ||
+                       typeof item === 'boolean' ||
+                       item === undefined) {
+              id = item;
+            } else if (typeof item === 'object') {
+              id = (item && item._id) || index;
+            } else {
+              throw new Error("{{#each}} doesn't support arrays with " +
+                              "elements of type " + typeof item);
+            }
+
+            var idString = idStringify(id);
+            if (idsUsed[idString]) {
+              warn("duplicate id " + id + " in", seq);
+              id = Random.id();
+            } else {
+              idsUsed[idString] = true;
+            }
+
+            return { _id: id, item: item };
           });
+
           diffArray(lastSeqArray, seqArray, callbacks);
         } else if (isMinimongoCursor(seq)) {
           var cursor = seq;
+          seqArray = [];
 
-          // Fetch the contents of the new cursor so that we can diff from the
-          // old sequence.
-          cursor.rewind(); // so that we can fetch
-          seqArray = _.map(cursor.fetch(), function (doc) {
-            return {_id: (doc && doc._id), item: doc};
-          });
-          cursor.rewind(); // so that the user can still fetch
-
-          // diff the old sequnce with initial data in the new cursor. this will
-          // fire `addedAt` callbacks on the initial data.
-          diffArray(lastSeqArray, seqArray, callbacks);
-
-          // make sure to not fire duplicate `addedAt` callbacks for initial
-          // data
-          var initial = true;
-
+          var initial = true; // are we observing initial data from cursor?
           activeObserveHandle = cursor.observe({
             addedAt: function (document, atIndex, before) {
-              if (!initial)
+              if (initial) {
+                // keep track of initial data so that we can diff once
+                // we exit `observe`.
+                if (before !== null)
+                  throw new Error("Expected initial data from observe in order");
+                seqArray.push({ _id: document._id, item: document });
+              } else {
                 callbacks.addedAt(document._id, document, atIndex, before);
+              }
             },
-            changed: function (newDocument, oldDocument) {
-              callbacks.changed(newDocument._id, newDocument, oldDocument);
+            changedAt: function (newDocument, oldDocument, atIndex) {
+              callbacks.changedAt(newDocument._id, newDocument, oldDocument,
+                                  atIndex);
             },
-            removed: function (oldDocument) {
-              callbacks.removed(oldDocument._id, oldDocument);
+            removedAt: function (oldDocument, atIndex) {
+              callbacks.removedAt(oldDocument._id, oldDocument, atIndex);
             },
             movedTo: function (document, fromIndex, toIndex, before) {
               callbacks.movedTo(
@@ -112,9 +156,13 @@ ObserveSequence = {
             }
           });
           initial = false;
+
+          // diff the old sequnce with initial data in the new cursor. this will
+          // fire `addedAt` callbacks on the initial data.
+          diffArray(lastSeqArray, seqArray, callbacks);
+
         } else {
-          throw new Error("Not a recognized sequence type. Currently only " +
-                          "arrays, cursors or falsey values accepted.");
+          throw badSequenceError();
         }
 
         lastSeq = seq;
@@ -142,10 +190,14 @@ ObserveSequence = {
     } else if (isMinimongoCursor(seq)) {
       return seq.fetch();
     } else {
-      throw new Error("Not a recognized sequence type. Currently only " +
-                      "arrays, cursors or falsey values accepted.");
+      throw badSequenceError();
     }
   }
+};
+
+var badSequenceError = function () {
+  return new Error("{{#each}} currently only accepts " +
+                   "arrays, cursors or falsey values.");
 };
 
 var isMinimongoCursor = function (seq) {
@@ -160,36 +212,96 @@ var diffArray = function (lastSeqArray, seqArray, callbacks) {
   var diffFn = Package.minimongo.LocalCollection._diffQueryOrderedChanges;
   var oldIdObjects = [];
   var newIdObjects = [];
-  var posOld = {};
-  var posNew = {};
+  var posOld = {}; // maps from idStringify'd ids
+  var posNew = {}; // ditto
+  var posCur = {};
+  var lengthCur = lastSeqArray.length;
 
   _.each(seqArray, function (doc, i) {
-    newIdObjects.push(_.pick(doc, '_id'));
-    posNew[doc._id] = i;
+    newIdObjects.push({_id: doc._id});
+    posNew[idStringify(doc._id)] = i;
   });
   _.each(lastSeqArray, function (doc, i) {
-    oldIdObjects.push(_.pick(doc, '_id'));
-    posOld[doc._id] = i;
+    oldIdObjects.push({_id: doc._id});
+    posOld[idStringify(doc._id)] = i;
+    posCur[idStringify(doc._id)] = i;
   });
 
   // Arrays can contain arbitrary objects. We don't diff the
-  // objects. Instead we always fire 'changed' callback on every
+  // objects. Instead we always fire 'changedAt' callback on every
   // object. The consumer of `observe-sequence` should deal with
   // it appropriately.
   diffFn(oldIdObjects, newIdObjects, {
     addedBefore: function (id, doc, before) {
-      callbacks.addedAt(id, seqArray[posNew[id]].item, posNew[id], before);
+      var position = before ? posCur[idStringify(before)] : lengthCur;
+
+      _.each(posCur, function (pos, id) {
+        if (pos >= position)
+          posCur[id]++;
+      });
+
+      lengthCur++;
+      posCur[idStringify(id)] = position;
+
+      callbacks.addedAt(
+        id,
+        seqArray[posNew[idStringify(id)]].item,
+        position,
+        before);
     },
     movedBefore: function (id, before) {
-      callbacks.movedTo(id, seqArray[posNew[id]].item, posOld[id], posNew[id], before);
+      var prevPosition = posCur[idStringify(id)];
+      var position = before ? posCur[idStringify(before)] : lengthCur - 1;
+
+      _.each(posCur, function (pos, id) {
+        if (pos >= prevPosition && pos <= position)
+          posCur[id]--;
+        else if (pos <= prevPosition && pos >= position)
+          posCur[id]++;
+      });
+
+      posCur[idStringify(id)] = position;
+
+      callbacks.movedTo(
+        id,
+        seqArray[posNew[idStringify(id)]].item,
+        prevPosition,
+        position,
+        before);
     },
     removed: function (id) {
-      callbacks.removed(id, lastSeqArray[posOld[id]].item);
+      var prevPosition = posCur[idStringify(id)];
+
+      _.each(posCur, function (pos, id) {
+        if (pos >= prevPosition)
+          posCur[id]--;
+      });
+
+      delete posCur[idStringify(id)];
+      lengthCur--;
+
+      callbacks.removedAt(
+        id,
+        lastSeqArray[posOld[idStringify(id)]].item,
+        prevPosition);
     }
   });
 
-  _.each(posNew, function (pos, id) {
-    if (_.has(posOld, id))
-      callbacks.changed(id, seqArray[pos].item, lastSeqArray[posOld[id]].item);
+  _.each(posNew, function (pos, idString) {
+    var id = idParse(idString);
+    if (_.has(posOld, idString)) {
+      // specifically for primitive types, compare equality before
+      // firing the 'changedAt' callback. otherwise, always fire it
+      // because doing a deep EJSON comparison is not guaranteed to
+      // work (an array can contain arbitrary objects, and 'transform'
+      // can be used on cursors). also, deep diffing is not
+      // necessarily the most efficient (if only a specific subfield
+      // of the object is later accessed).
+      var newItem = seqArray[pos].item;
+      var oldItem = lastSeqArray[posOld[idString]].item;
+
+      if (typeof newItem === 'object' || newItem !== oldItem)
+          callbacks.changedAt(id, newItem, oldItem, pos);
+      }
   });
 };

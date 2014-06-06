@@ -16,9 +16,11 @@ HTML.toHTML = function (node, parentComponent) {
     // component
     var instance = node.instantiate(parentComponent || null);
     var content = instance.render('STATIC');
+    stopWithLater(instance);
+    // recurse with a new value for parentComponent
     return HTML.toHTML(content, instance);
   } else if (typeof node === 'function') {
-    return HTML.toHTML(node(), parentComponent);
+    return HTML.toHTML(callReactiveFunction(node), parentComponent);
   } else if (node.toHTML) {
     // Tag or something else
     return node.toHTML(parentComponent);
@@ -42,21 +44,20 @@ HTML.Raw.prototype.toHTML = function () {
 
 HTML.Tag.prototype.toHTML = function (parentComponent) {
   var attrStrs = [];
-  var attrs = this.evaluateDynamicAttributes(parentComponent);
+  var attrs = this.evaluateAttributes(parentComponent);
   if (attrs) {
     for (var k in attrs) {
-      k = HTML.properCaseAttributeName(k);
       var v = HTML.toText(attrs[k], HTML.TEXTMODE.ATTRIBUTE, parentComponent);
       attrStrs.push(' ' + k + '="' + v + '"');
     }
   }
 
   var tagName = this.tagName;
-  var startTag = '<' + HTML.properCaseTagName(tagName) + attrStrs.join('') + '>';
+  var startTag = '<' + tagName + attrStrs.join('') + '>';
 
   var childStrs = [];
   var content;
-  if (tagName === 'TEXTAREA') {
+  if (tagName === 'textarea') {
     for (var i = 0; i < this.children.length; i++)
       childStrs.push(HTML.toText(this.children[i], HTML.TEXTMODE.RCDATA, parentComponent));
 
@@ -79,7 +80,7 @@ HTML.Tag.prototype.toHTML = function (parentComponent) {
     // "Void" elements like BR are the only ones that don't get a close
     // tag in HTML5.  They shouldn't have contents, either, so we could
     // throw an error upon seeing contents here.
-    result += '</' + HTML.properCaseTagName(tagName) + '>';
+    result += '</' + tagName + '>';
   }
 
   return result;
@@ -115,20 +116,35 @@ HTML.toText = function (node, textMode, parentComponent) {
       parts.push(HTML.toText(node[i], textMode, parentComponent));
     return parts.join('');
   } else if (typeof node === 'function') {
-    return HTML.toText(node(), textMode, parentComponent);
+    return HTML.toText(callReactiveFunction(node), textMode, parentComponent);
   } else if (typeof node.instantiate === 'function') {
     // component
     var instance = node.instantiate(parentComponent || null);
     var content = instance.render('STATIC');
-    return HTML.toText(content, textMode, instance);
+    var result = HTML.toText(content, textMode, instance);
+    stopWithLater(instance);
+    return result;
   } else if (node.toText) {
     // Something else
-    return node.toText(textMode, textMode, parentComponent);
+    return node.toText(textMode, parentComponent);
   } else {
     throw new Error("Expected tag, string, array, component, null, undefined, or " +
                     "object with a toText method; found: " + node);
   }
 
+};
+
+HTML.Raw.prototype.toText = function () {
+  return this.value;
+};
+
+// used when including templates within {{#markdown}}
+HTML.Tag.prototype.toText = function (textMode, parentComponent) {
+  if (textMode === HTML.TEXTMODE.STRING)
+    // stringify the tag as HTML, then convert to text
+    return HTML.toText(this.toHTML(parentComponent), textMode);
+  else
+    throw new Error("Can't insert tags in attributes or TEXTAREA elements");
 };
 
 HTML.CharRef.prototype.toText = function (textMode) {

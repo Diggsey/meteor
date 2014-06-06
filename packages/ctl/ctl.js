@@ -12,21 +12,6 @@ Ctl.Commands.push({
   }
 });
 
-var mergeObjects = function (obj1, obj2) {
-  var result = _.clone(obj1);
-  _.each(obj2, function (v, k) {
-    // If both objects have an object at this key, then merge those objects.
-    // Otherwise, choose obj2's value.
-    if ((v instanceof Object) && (obj1[k] instanceof Object))
-      result[k] = mergeObjects(v, obj1[k]);
-    else
-      result[k] = v;
-  });
-  return result;
-};
-
-
-
 var startFun = function (argv) {
   if (argv.help || argv._.length !== 0) {
     process.stderr.write(
@@ -139,14 +124,45 @@ Ctl.Commands.push({
     };
     var oldServers = jobs.find(oldJobSelector).fetch();
     // Start a new job for each of them.
+    var newServersAlreadyPresent = jobs.find({
+      app: Ctl.myAppName(),
+      star: thisJob.star,
+      program: "server",
+      done: false
+    }).count();
+    // discount any new servers we've already started.
+    oldServers.splice(0, newServersAlreadyPresent);
+    console.log("starting " + oldServers.length + " new servers to match old");
     _.each(oldServers, function (oldServer) {
       Ctl.startServerlikeProgram("server",
                                  oldServer.tags,
                                  oldServer.env.ADMIN_APP);
     });
     // Wait for them all to come up and bind to the proxy.
-    Meteor._sleepForMs(10000); // XXX: Eventually make sure they're proxy-bound.
-    Ctl.updateProxyActiveTags(['', thisJob.star]);
+    var updateProxyActiveTagsOptions = {
+      requireRegisteredBindingCount: {}
+    };
+    // How many new servers should be up when we update the tags, given how many
+    // servers we're aiming at:
+    var target;
+    switch (oldServers.length) {
+    case 0:
+      target = 0;
+      break;
+    case 1:
+      target = 1;
+      break;
+    case 2:
+      target = 1;
+      break;
+    default:
+      var c = oldServers.length;
+      target =  Math.min(c - 1, Math.ceil(c*.8));
+      break;
+    }
+    updateProxyActiveTagsOptions.requireRegisteredBindingCount[thisJob.star] =
+      target;
+    Ctl.updateProxyActiveTags(['', thisJob.star], updateProxyActiveTagsOptions);
 
     // (eventually) tell the proxy to switch over to using the new star
     // One by one, kill all the old star's server jobs.

@@ -46,10 +46,17 @@ Meteor.startup(function () {
   }
 
   var ignore_waypoints = false;
-  $('body').delegate('h1, h2, h3', 'waypoint.reached', function (evt, dir) {
+  var lastTimeout = null;
+  $('h1, h2, h3').waypoint(function (evt, dir) {
     if (!ignore_waypoints) {
       var active = (dir === "up") ? this.prev : this;
-      Session.set("section", active.id);
+      if (active.id) {
+        if (lastTimeout)
+          Meteor.clearTimeout(lastTimeout);
+        lastTimeout = Meteor.setTimeout(function () {
+          Session.set("section", active.id);
+        }, 200);
+      }
     }
   });
 
@@ -81,7 +88,17 @@ Meteor.startup(function () {
 
   // Make external links open in a new tab.
   $('a:not([href^="#"])').attr('target', '_blank');
+
+  // Hide menu by tapping on background
+  $('#main').on('click', function () {
+    hideMenu();
+  });
 });
+
+var hideMenu = function () {
+  $('#nav').removeClass('show');
+  $('#menu-ico').removeClass('hidden');
+};
 
 var toc = [
   {name: "Meteor " + Template.headline.release(), id: "top"}, [
@@ -94,8 +111,7 @@ var toc = [
     "Structuring your app",
     "Data and security",
     "Reactivity",
-    "Live HTML",
-    "Templates",
+    "Live HTML templates",
     "Using packages",
     "Namespacing",
     "Deploying",
@@ -193,12 +209,7 @@ var toc = [
       "Meteor.logout",
       "Meteor.logoutOtherClients",
       "Meteor.loginWithPassword",
-      {name: "Meteor.loginWithFacebook", id: "meteor_loginwithexternalservice"},
-      {name: "Meteor.loginWithGithub", id: "meteor_loginwithexternalservice"},
-      {name: "Meteor.loginWithGoogle", id: "meteor_loginwithexternalservice"},
-      {name: "Meteor.loginWithMeetup", id: "meteor_loginwithexternalservice"},
-      {name: "Meteor.loginWithTwitter", id: "meteor_loginwithexternalservice"},
-      {name: "Meteor.loginWithWeibo", id: "meteor_loginwithexternalservice"},
+      {name: "Meteor.loginWith<Service>", id: "meteor_loginwithexternalservice"},
       {type: "spacer"},
 
       {name: "{{currentUser}}", id: "template_currentuser"},
@@ -208,7 +219,10 @@ var toc = [
       "Accounts.config",
       "Accounts.ui.config",
       "Accounts.validateNewUser",
-      "Accounts.onCreateUser"
+      "Accounts.onCreateUser",
+      "Accounts.validateLoginAttempt",
+      "Accounts.onLogin",
+      {name: "Accounts.onLoginFailure", id: "accounts_onlogin"}
     ],
 
     {name: "Passwords", id: "accounts_passwords"}, [
@@ -227,13 +241,12 @@ var toc = [
     ],
 
     {name: "Templates", id: "templates_api"}, [
-      {prefix: "Template", instance: "myTemplate", id: "template_call"}, [
-        {name: "rendered", id: "template_rendered"},
-        {name: "created", id: "template_created"},
-        {name: "destroyed", id: "template_destroyed"},
+      {prefix: "Template", instance: "myTemplate", id: "templates_api"}, [
         {name: "events", id: "template_events"},
         {name: "helpers", id: "template_helpers"},
-        {name: "preserve", id: "template_preserve"}
+        {name: "rendered", id: "template_rendered"},
+        {name: "created", id: "template_created"},
+        {name: "destroyed", id: "template_destroyed"}
       ],
       {name: "Template instances", id: "template_inst"}, [
         {instance: "this", name: "findAll", id: "template_findAll"},
@@ -242,10 +255,16 @@ var toc = [
         {instance: "this", name: "lastNode", id: "template_lastNode"},
         {instance: "this", name: "data", id: "template_data"}
       ],
+      "UI", [
+        "UI.registerHelper",
+        "UI.body",
+        "UI.render",
+        "UI.renderWithData",
+        "UI.insert",
+        "UI.getElementData"
+      ],
       {type: "spacer"},
-      {name: "Event maps", style: "noncode"},
-      {name: "Constant regions", style: "noncode", id: "constant"},
-      {name: "Reactivity isolation", style: "noncode", id: "isolate"}
+      {name: "Event maps", style: "noncode"}
      ],
 
     "Match", [
@@ -303,10 +322,10 @@ var toc = [
       {name: "EJSON.isBinary", id: "ejson_is_binary"},
       {name: "EJSON.addType", id: "ejson_add_type"},
       [
-        {instance: "instance", id: "ejson_type_clone", name: "clone"},
-        {instance: "instance", id: "ejson_type_equals", name: "equals"},
         {instance: "instance", id: "ejson_type_typeName", name: "typeName"},
-        {instance: "instance", id: "ejson_type_toJSONValue", name: "toJSONValue"}
+        {instance: "instance", id: "ejson_type_toJSONValue", name: "toJSONValue"},
+        {instance: "instance", id: "ejson_type_clone", name: "clone"},
+        {instance: "instance", id: "ejson_type_equals", name: "equals"}
       ]
     ],
 
@@ -340,6 +359,7 @@ var toc = [
     "force-ssl",
     "jquery",
     "less",
+    "oauth-encryption",
     "random",
     "spiderable",
     "stylus",
@@ -372,6 +392,10 @@ Template.nav.sections = function () {
   var ret = [];
   var walk = function (items, depth) {
     _.each(items, function (item) {
+      // Work around (eg) accidental trailing commas leading to spurious holes
+      // in IE8.
+      if (!item)
+        return;
       if (item instanceof Array)
         walk(item, depth + 1);
       else {
@@ -393,7 +417,7 @@ Template.nav.sections = function () {
 
 Template.nav.type = function (what) {
   return this.type === what;
-}
+};
 
 Template.nav.maybe_current = function () {
   return Session.equals("section", this.id) ? "current" : "";
@@ -403,37 +427,28 @@ Template.nav_section.depthIs = function (n) {
   return this.depth === n;
 };
 
-// "name" argument may be provided as part of options instead.
-Handlebars.registerHelper('dtdd', function(name, options) {
-  if (options) {
-    // {{#dtdd name}}
-    options.name = name;
-  } else {
-    // {{#dtdd name="foo" type="bar"}}
-    options = name;
+// Show hidden TOC when menu icon is tapped
+Template.nav.events({
+  'click #menu-ico' : function () {
+    $('#nav').addClass('show');
+    $('#menu-ico').addClass('hidden');
+  },
+  // Hide TOC when selecting an item
+  'click a' : function () {
+    hideMenu();
   }
-
-  return Template.dtdd_helper.withData({
-    name: options.name,
-    type: options.type
-  });
 });
 
-Handlebars.registerHelper('dstache', function() {
+UI.registerHelper('dstache', function() {
   return '{{';
 });
 
-Handlebars.registerHelper('tstache', function() {
+UI.registerHelper('tstache', function() {
   return '{{{';
 });
 
-Handlebars.registerHelper('lt', function () {
+UI.registerHelper('lt', function () {
   return '<';
-});
-
-Handlebars.registerHelper('api_section', function(id, nameFn) {
-  return Template.api_section.withData(
-    {name: nameFn(this), id:id});
 });
 
 Template.api_box.bare = function() {

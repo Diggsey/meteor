@@ -1,5 +1,6 @@
 Package.describe({
-  summary: "Small library for expressing HTML trees"
+  summary: "Small library for expressing HTML trees",
+  internal: true
 });
 
 Package.on_use(function (api) {
@@ -10,6 +11,7 @@ Package.on_use(function (api) {
 
 Package.on_test(function (api) {
   api.use('htmljs');
+  api.use('html-tools');
   api.use('tinytest');
   api.use('underscore');
   api.add_files(['htmljs_test.js']);

@@ -4,5 +4,5 @@ Package.describe({
 });
 
 Package.on_use(function (api) {
-  // Deprecated -- Meteor UI makes preserve directives unnecessary
+  api.add_files('deprecated.js', 'server');
 });

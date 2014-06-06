@@ -26,12 +26,12 @@ Tinytest.add("templating - html scanner", function (test) {
   // where content is something simple like the string "Hello"
   // (passed in as a source string including the quotes).
   var simpleBody = function (content) {
-    return "\nUI.body.contentParts.push(UI.Component.extend({render: (function() {\n  var self = this;\n  return " + content + ";\n})}));\nMeteor.startup(function () { if (! UI.body.INSTANTIATED) { UI.body.INSTANTIATED = true; UI.materialize(UI.body, document.body); } });\n";
+    return "\nUI.body.contentParts.push(UI.Component.extend({render: (function() {\n  var self = this;\n  return " + content + ";\n})}));\nMeteor.startup(function () { if (! UI.body.INSTANTIATED) { UI.body.INSTANTIATED = true; UI.DomRange.insert(UI.render(UI.body).dom, document.body); } });\n";
   };
 
   // arguments are quoted strings like '"hello"'
   var simpleTemplate = function (templateName, content) {
-    return '\nTemplate.__define__(' + templateName + ', (function() {\n  var self = this;\n  var __content = self.__content, __elseContent = self.__elseContent;\n  return ' + content + ';\n}));\n';
+    return '\nTemplate.__define__(' + templateName + ', (function() {\n  var self = this;\n  var template = this;\n  return ' + content + ';\n}));\n';
   };
 
   var checkResults = function(results, expectJs, expectHead) {
@@ -151,12 +151,12 @@ Tinytest.add("templating - html scanner", function (test) {
   // attributes on body not supported
   checkError(function() {
     return html_scanner.scan('<body foo="bar">\n  Hello\n</body>');
-  }, "<body>", 3);
+  }, "<body>", 1);
 
   // attributes on head not supported
   checkError(function() {
     return html_scanner.scan('<head foo="bar">\n  Hello\n</head>');
-  }, "<head>", 3);
+  }, "<head>", 1);
 
   // can't mismatch quotes
   checkError(function() {

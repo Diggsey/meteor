@@ -31,10 +31,10 @@ Tinytest.add("templating - assembly", function (test) {
     return Session.get("stuff");
   };
   var onscreen = renderToDiv(Template.test_assembly_b0);
-  test.equal(onscreen.innerHTML, "xyhi");
+  test.equal(canonicalizeHtml(onscreen.innerHTML), "xyhi");
   Session.set("stuff", false);
   Deps.flush();
-  test.equal(onscreen.innerHTML, "xhi");
+  test.equal(canonicalizeHtml(onscreen.innerHTML), "xhi");
   Deps.flush();
 });
 
@@ -53,32 +53,24 @@ Tinytest.add("templating - table assembly", function(test) {
     });
   };
 
-  var table;
-  table = childWithTag(renderToDiv(Template.test_table_a0), "TABLE");
-
-  // table.rows is a great test, as it fails not only when TR/TD tags are
-  // stripped due to improper html-to-fragment, but also when they are present
-  // but don't show up because we didn't create a TBODY for IE.
-  test.equal(table.rows.length, 3);
-
-  // this time with an explicit TBODY
-  table = childWithTag(renderToDiv(Template.test_table_b0), "TABLE");
+  // The table.rows test would fail when TR/TD tags are stripped due
+  // to improper html-to-fragment
+  var table = childWithTag(renderToDiv(Template.test_table_b0), "TABLE");
   test.equal(table.rows.length, 3);
 
   var c = new LocalCollection();
   c.insert({bar:'a'});
   c.insert({bar:'b'});
   c.insert({bar:'c'});
-  var onscreen = renderToDiv(Template.test_table_each.withData({foo: c.find()}));
+  var onscreen = renderToDiv(Template.test_table_each.extend({data: {foo: c.find()}}));
   table = childWithTag(onscreen, "TABLE");
 
   test.equal(table.rows.length, 3, table.parentNode.innerHTML);
   var tds = onscreen.getElementsByTagName("TD");
   test.equal(tds.length, 3);
-  test.equal(tds[0].innerHTML, "a");
-  test.equal(tds[1].innerHTML, "b");
-  test.equal(tds[2].innerHTML, "c");
-
+  test.equal(canonicalizeHtml(tds[0].innerHTML), "a");
+  test.equal(canonicalizeHtml(tds[1].innerHTML), "b");
+  test.equal(canonicalizeHtml(tds[2].innerHTML), "c");
 
   Deps.flush();
 });
@@ -98,8 +90,8 @@ Tinytest.add("templating - event handler this", function(test) {
   });
 
   var event_buf = [];
-  var containerDiv = renderToDiv(Template.test_event_data_with.withData(
-    Template.test_event_data_with.ONE));
+  var containerDiv = renderToDiv(Template.test_event_data_with.extend({data:
+    Template.test_event_data_with.ONE}));
   var cleanupDiv = addToBody(containerDiv);
 
   var divs = containerDiv.getElementsByTagName("div");
@@ -121,39 +113,95 @@ Tinytest.add("templating - event handler this", function(test) {
   Deps.flush();
 });
 
+
+if (document.addEventListener) {
+  // Only run this test on browsers with support for event
+  // capturing. A more detailed analysis can be found at
+  // https://www.meteor.com/blog/2013/09/06/browser-events-bubbling-capturing-and-delegation
+
+  // This is related to issue at https://gist.github.com/mquandalle/8157017
+  // Tests two situations related to events that can only be captured, not bubbled:
+  // 1. Event should only fire the handler that matches the selector given
+  // 2. Event should work on every element in the selector and not just the first element
+  // This test isn't written against mouseenter because it is synthesized by jQuery,
+  // the bug also happened with the play event
+  Tinytest.add("templating - capturing events", function (test) {
+    var video1Played = 0,
+        video2Played = 0;
+
+    Template.test_capture_events.events({
+      'play .video1': function () {
+        video1Played++;
+      },
+      'play .video2': function () {
+        video2Played++;
+      }
+    });
+
+    // add to body or else events don't actually fire
+    var containerDiv = renderToDiv(Template.test_capture_events);
+    var cleanupDiv = addToBody(containerDiv);
+
+    var checkAndResetEvents = function(video1, video2) {
+      test.equal(video1Played, video1);
+      test.equal(video2Played, video2);
+
+      video1Played = 0;
+      video2Played = 0;
+    };
+
+    simulateEvent($(containerDiv).find(".video1").get(0),
+                  "play", {}, {bubbles: false});
+    checkAndResetEvents(1, 0);
+
+    simulateEvent($(containerDiv).find(".video2").get(0),
+                  "play", {}, {bubbles: false});
+    checkAndResetEvents(0, 1);
+
+    simulateEvent($(containerDiv).find(".video2").get(1),
+                  "play", {}, {bubbles: false});
+    checkAndResetEvents(0, 1);
+
+    // clean up DOM
+    cleanupDiv();
+    Deps.flush();
+  });
+}
+
 Tinytest.add("templating - safestring", function(test) {
 
   Template.test_safestring_a.foo = function() {
     return "<br>";
   };
   Template.test_safestring_a.bar = function() {
-    return new Handlebars.SafeString("<hr>");
+    return new Spacebars.SafeString("<hr>");
   };
 
   var obj = {fooprop: "<br>",
-             barprop: new Handlebars.SafeString("<hr>")};
-  var html = renderToDiv(Template.test_safestring_a.withData(obj)).innerHTML;
+             barprop: new Spacebars.SafeString("<hr>")};
+  var html = canonicalizeHtml(
+    renderToDiv(Template.test_safestring_a.extend({data: obj})).innerHTML);
 
-  test.equal(html.replace(/\s+/g, ' '),
-             "&lt;br&gt; <br> <hr> <hr> "+
-             "&lt;br&gt; <br> <hr> <hr>");
+  test.equal(html,
+             "&lt;br&gt;<br><hr><hr>"+
+             "&lt;br&gt;<br><hr><hr>");
 
 });
 
 Tinytest.add("templating - helpers and dots", function(test) {
-  Handlebars.registerHelper("platypus", function() {
+  UI.registerHelper("platypus", function() {
     return "eggs";
   });
-  Handlebars.registerHelper("watermelon", function() {
+  UI.registerHelper("watermelon", function() {
     return "seeds";
   });
 
-  Handlebars.registerHelper("daisygetter", function() {
+  UI.registerHelper("daisygetter", function() {
     return this.daisy;
   });
 
   // XXX for debugging
-  Handlebars.registerHelper("debugger", function() {
+  UI.registerHelper("debugger", function() {
     debugger;
   });
 
@@ -179,7 +227,7 @@ Tinytest.add("templating - helpers and dots", function(test) {
     };
   };
 
-  Handlebars.registerHelper("fancyhelper", getFancyObject);
+  UI.registerHelper("fancyhelper", getFancyObject);
 
   Template.test_helpers_a.platypus = 'bill';
   Template.test_helpers_a.warthog = function() {
@@ -187,6 +235,7 @@ Tinytest.add("templating - helpers and dots", function(test) {
   };
 
   var listFour = function(a, b, c, d, options) {
+    test.isTrue(options instanceof Spacebars.kw);
     var keywordArgs = _.map(_.keys(options.hash), function(k) {
       var val = options.hash[k];
       return k+':'+val;
@@ -208,7 +257,8 @@ Tinytest.add("templating - helpers and dots", function(test) {
   };
 
   var html;
-  html = renderToDiv(Template.test_helpers_a.withData(dataObj)).innerHTML;
+  html = canonicalizeHtml(
+    renderToDiv(Template.test_helpers_a.extend({data: dataObj})).innerHTML);
   test.equal(html.match(/\S+/g), [
     'platypus=bill', // helpers on Template object take first priority
     'watermelon=seeds', // global helpers take second priority
@@ -217,7 +267,8 @@ Tinytest.add("templating - helpers and dots", function(test) {
     'warthog=snout' // function Template property
   ]);
 
-  html = renderToDiv(Template.test_helpers_b.withData(dataObj)).innerHTML;
+  html = canonicalizeHtml(
+    renderToDiv(Template.test_helpers_b.extend({data: dataObj})).innerHTML);
   test.equal(html.match(/\S+/g), [
     // unknown properties silently fail
     'unknown=',
@@ -225,7 +276,8 @@ Tinytest.add("templating - helpers and dots", function(test) {
     'zero=0'
   ]);
 
-  html = renderToDiv(Template.test_helpers_c.withData(dataObj)).innerHTML;
+  html = canonicalizeHtml(
+    renderToDiv(Template.test_helpers_c.extend({data: dataObj})).innerHTML);
   test.equal(html.match(/\S+/g), [
     // property gets are supposed to silently fail
     'platypus.X=',
@@ -238,7 +290,8 @@ Tinytest.add("templating - helpers and dots", function(test) {
     'getUndefined.X.Y='
   ]);
 
-  html = renderToDiv(Template.test_helpers_d.withData(dataObj)).innerHTML;
+  html = canonicalizeHtml(
+    renderToDiv(Template.test_helpers_d.extend({data: dataObj})).innerHTML);
   test.equal(html.match(/\S+/g), [
     // helpers should get current data context in `this`
     'daisygetter=petal',
@@ -251,7 +304,8 @@ Tinytest.add("templating - helpers and dots", function(test) {
     '../fancy.currentFruit=guava'
   ]);
 
-  html = renderToDiv(Template.test_helpers_e.withData(dataObj)).innerHTML;
+  html = canonicalizeHtml(
+    renderToDiv(Template.test_helpers_e.extend({data: dataObj})).innerHTML);
   test.equal(html.match(/\S+/g), [
     'fancy.foo=bar',
     'fancy.apple.banana=smoothie',
@@ -261,7 +315,8 @@ Tinytest.add("templating - helpers and dots", function(test) {
     'fancy.currentCountry.unicorns=0'
   ]);
 
-  html = renderToDiv(Template.test_helpers_f.withData(dataObj)).innerHTML;
+  html = canonicalizeHtml(
+    renderToDiv(Template.test_helpers_f.extend({data: dataObj})).innerHTML);
   test.equal(html.match(/\S+/g), [
     'fancyhelper.foo=bar',
     'fancyhelper.apple.banana=smoothie',
@@ -273,7 +328,8 @@ Tinytest.add("templating - helpers and dots", function(test) {
 
   // test significance of 'this', which prevents helper from
   // shadowing property
-  html = renderToDiv(Template.test_helpers_g.withData(dataObj)).innerHTML;
+  html = canonicalizeHtml(
+    renderToDiv(Template.test_helpers_g.extend({data: dataObj})).innerHTML);
   test.equal(html.match(/\S+/g), [
     'platypus=eggs',
     'this.platypus=weird'
@@ -283,7 +339,8 @@ Tinytest.add("templating - helpers and dots", function(test) {
 
   Template.test_helpers_h.helperListFour = listFour;
 
-  html = renderToDiv(Template.test_helpers_h.withData(dataObj)).innerHTML;
+  html = canonicalizeHtml(
+    renderToDiv(Template.test_helpers_h.extend({data: dataObj})).innerHTML);
   var trials =
         html.match(/\(.*?\)/g);
   test.equal(trials[0],
@@ -308,7 +365,7 @@ Tinytest.add("templating - rendered template", function(test) {
     return this.x + 1;
   };
 
-  var div = renderToDiv(Template.test_render_a.withData({x: 123}));
+  var div = renderToDiv(Template.test_render_a.extend({data: {x: 123}}));
   test.equal($(div).text().match(/\S+/)[0], "124");
 
   var br1 = div.getElementsByTagName('br')[0];
@@ -336,7 +393,7 @@ Tinytest.add("templating - rendered template", function(test) {
     return (+this) + 1;
   };
 
-  div = renderToDiv(Template.test_render_b.withData({x: 123}));
+  div = renderToDiv(Template.test_render_b.extend({data: {x: 123}}));
   test.equal($(div).text().match(/\S+/)[0], "201");
 
   var br1 = div.getElementsByTagName('br')[0];
@@ -394,7 +451,7 @@ Tinytest.add("templating - template arg", function (test) {
     test.throws(function () { return self.findAll("*"); });
   };
 
-  var div = renderToDiv(Template.test_template_arg_a.withData({food: "pie"}));
+  var div = renderToDiv(Template.test_template_arg_a.extend({data: {food: "pie"}}));
   var cleanupDiv = addToBody(div);
   Deps.flush(); // cause `rendered` to be called
   test.equal($(div).text(), "Greetings 1-bold Line");
@@ -428,15 +485,11 @@ Tinytest.add("templating - helpers", function (test) {
   });
 
   div = renderToDiv(tmpl);
-  var txt = $(div).text().match(/\S+/)[0];
-  test.isTrue(txt.match(/^ABC?4D$/));
-  // We don't get 'C' (the ability to name a helper {{toString}})
-  // in IE < 9 because of the famed DontEnum bug.  This could be
-  // fixed but it would require making all the code that handles
-  // the dictionary of helpers be DontEnum-aware.  In practice,
-  // the Object prototype method names (toString, hasOwnProperty,
-  // isPropertyOf, ...) make poor helper names and are unlikely
-  // to be used in apps.
+  var txt = $(div).text();
+  txt = txt.replace('[object Object]', 'X'); // IE 8
+  txt = txt.match(/\S+/)[0];
+  test.isTrue(txt.match(/^AB[CX]4D$/));
+  // We don't make helpers with names like toString work in IE 8.
   test.expect_fail();
   test.equal(txt, 'ABC4D');
   Deps.flush();
@@ -508,7 +561,7 @@ Tinytest.add("templating - events", function (test) {
 
 Tinytest.add('templating - helper typecast Issue #617', function (test) {
 
-  Handlebars.registerHelper('testTypeCasting', function (/*arguments*/) {
+  UI.registerHelper('testTypeCasting', function (/*arguments*/) {
     // Return a string representing the arguments passed to this
     // function, including types. eg:
     // (1, true) -> "[number,1][boolean,true]"
@@ -534,10 +587,10 @@ Tinytest.add('templating - helper typecast Issue #617', function (test) {
 });
 
 Tinytest.add('templating - each falsy Issue #801', function (test) {
-  //Minor test for issue #801
+  //Minor test for issue #801 (#each over array containing nulls)
   Template.test_template_issue801.values = function() { return [0,1,2,null,undefined,false]; };
   var div = renderToDiv(Template.test_template_issue801);
-  test.equal(canonicalizeHtml(div.innerHTML), "012false");
+  test.equal(canonicalizeHtml(div.innerHTML), "012");
 });
 
 Tinytest.add('templating - duplicate template error', function (test) {

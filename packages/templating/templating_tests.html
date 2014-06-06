@@ -30,30 +30,6 @@
 
 
 
-<template name="test_table_a0">
-  <table>
-    {{> test_table_a1}}
-    {{> test_table_a1}}
-    {{> test_table_a1}}
-  </table>
-</template>
-
-<template name="test_table_a1">
-  <tr>
-    {{> test_table_a2}}
-  </tr>
-</template>
-
-<template name="test_table_a2">
-  <td>
-    {{> test_table_a3}}
-  </td>
-</template>
-
-<template name="test_table_a3">
-  Foo.
-</template>
-
 <template name="test_table_b0">
   <table>
     <tbody>
@@ -83,9 +59,11 @@
 
 <template name="test_table_each">
   <table>
-    {{#each foo}}
-      <tr><td>{{bar}}</td></tr>
-    {{/each}}
+    <tbody>
+      {{#each foo}}
+        <tr><td>{{bar}}</td></tr>
+      {{/each}}
+    </tbody>
   </table>
 </template>
 
@@ -103,6 +81,24 @@
     </div>
   {{/with}}
 </div>
+</template>
+
+<template name="test_capture_events">
+  <video class='video1'>
+    <source id='mp4'
+      src="http://media.w3.org/2010/05/sintel/trailer.mp4"
+      type='video/mp4'>
+  </video>
+  <video class='video2'>
+    <source id='mp4'
+      src="http://media.w3.org/2010/05/sintel/trailer.mp4"
+      type='video/mp4'>
+  </video>
+  <video class='video2'>
+    <source id='mp4'
+      src="http://media.w3.org/2010/05/sintel/trailer.mp4"
+      type='video/mp4'>
+  </video>
 </template>
 
 <template name="test_safestring_a">

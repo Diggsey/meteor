@@ -19,7 +19,7 @@
 // { t: 'Tag',
 //   isEnd: Boolean (optional),
 //   isSelfClosing: Boolean (optional),
-//   n: String (tag name, ASCII-lowercased),
+//   n: String (tag name, in lowercase or camel case),
 //   attrs: { String: [zero or more 'Chars' or 'CharRef' objects] }
 //     (only for start tags; required)
 // }
@@ -41,9 +41,19 @@
 //   v: { ... anything ... }
 // }
 
-var HTML_SPACE = /^[\f\n\t ]/;
+// The HTML tokenization spec says to preprocess the input stream to replace
+// CR(LF)? with LF.  However, preprocessing `scanner` would complicate things
+// by making indexes not match the input (e.g. for error messages), so we just
+// keep in mind as we go along that an LF might be represented by CRLF or CR.
+// In most cases, it doesn't actually matter what combination of whitespace
+// characters are present (e.g. inside tags).
+var HTML_SPACE = /^[\f\n\r\t ]/;
 
-getComment = function (scanner) {
+var convertCRLF = function (str) {
+  return str.replace(/\r\n?/g, '\n');
+};
+
+getComment = HTMLTools.Parse.getComment = function (scanner) {
   if (scanner.rest().slice(0, 4) !== '<!--')
     return null;
   scanner.pos += 4;
@@ -70,7 +80,7 @@ getComment = function (scanner) {
   scanner.pos += closePos + 3;
 
   return { t: 'Comment',
-           v: commentContents };
+           v: convertCRLF(commentContents) };
 };
 
 var skipSpaces = function (scanner) {
@@ -111,8 +121,8 @@ var getDoctypeQuotedString = function (scanner) {
 // See http://www.whatwg.org/specs/web-apps/current-work/multipage/syntax.html#the-doctype.
 //
 // If `getDocType` sees "<!DOCTYPE" (case-insensitive), it will match or fail fatally.
-getDoctype = function (scanner) {
-  if (HTML.asciiLowerCase(scanner.rest().slice(0, 9)) !== '<!doctype')
+getDoctype = HTMLTools.Parse.getDoctype = function (scanner) {
+  if (HTMLTools.asciiLowerCase(scanner.rest().slice(0, 9)) !== '<!doctype')
     return null;
   var start = scanner.pos;
   scanner.pos += 9;
@@ -131,7 +141,7 @@ getDoctype = function (scanner) {
     name += ch;
     scanner.pos++;
   }
-  name = HTML.asciiLowerCase(name);
+  name = HTMLTools.asciiLowerCase(name);
 
   // Now we're looking at a space or a `>`.
   skipSpaces(scanner);
@@ -144,7 +154,7 @@ getDoctype = function (scanner) {
     // but we're not looking at space or `>`.
 
     // this should be "public" or "system".
-    var publicOrSystem = HTML.asciiLowerCase(scanner.rest().slice(0, 6));
+    var publicOrSystem = HTMLTools.asciiLowerCase(scanner.rest().slice(0, 6));
 
     if (publicOrSystem === 'system') {
       scanner.pos += 6;
@@ -195,7 +205,7 @@ var getChars = makeRegexMatcher(/^[^&<\u0000][^&<\u0000{]*/);
 // consumes characters and emits nothing (e.g. in the case of template
 // comments), we may go from not-at-EOF to at-EOF and return `null`,
 // while otherwise we always find some token to return.
-getHTMLToken = function (scanner, dataMode) {
+getHTMLToken = HTMLTools.Parse.getHTMLToken = function (scanner, dataMode) {
   var result = null;
   if (scanner.getSpecialTag) {
     var lastPos = -1;
@@ -221,7 +231,7 @@ getHTMLToken = function (scanner, dataMode) {
   var chars = getChars(scanner);
   if (chars)
     return { t: 'Chars',
-             v: chars };
+             v: convertCRLF(chars) };
 
   var ch = scanner.peek();
   if (! ch)
@@ -261,10 +271,10 @@ getHTMLToken = function (scanner, dataMode) {
   scanner.fatal("Unexpected `<!` directive.");
 };
 
-var getTagName = makeRegexMatcher(/^[a-zA-Z][^\f\n\t />{]*/);
+var getTagName = makeRegexMatcher(/^[a-zA-Z][^\f\n\r\t />{]*/);
 var getClangle = makeRegexMatcher(/^>/);
 var getSlash = makeRegexMatcher(/^\//);
-var getAttributeName = makeRegexMatcher(/^[^>/\u0000"'<=\f\n\t ][^\f\n\t /=>"'<\u0000]*/);
+var getAttributeName = makeRegexMatcher(/^[^>/\u0000"'<=\f\n\r\t ][^\f\n\r\t /=>"'<\u0000]*/);
 
 // Try to parse `>` or `/>`, mutating `tag` to be self-closing in the latter
 // case (and failing fatally if `/` isn't followed by `>`).
@@ -295,6 +305,7 @@ var getQuotedAttributeValue = function (scanner, quote) {
   while (true) {
     var ch = scanner.peek();
     var special;
+    var curPos = scanner.pos;
     if (ch === quote) {
       scanner.pos++;
       return tokens;
@@ -306,17 +317,25 @@ var getQuotedAttributeValue = function (scanner, quote) {
       tokens.push(charRef);
       charsTokenToExtend = null;
     } else if (scanner.getSpecialTag &&
-               (special = scanner.getSpecialTag(scanner,
-                                                TEMPLATE_TAG_POSITION.IN_ATTRIBUTE))) {
-      tokens.push({t: 'Special', v: special});
-      charsTokenToExtend = null;
+               ((special = scanner.getSpecialTag(scanner,
+                                                 TEMPLATE_TAG_POSITION.IN_ATTRIBUTE)) ||
+                scanner.pos > curPos /* `{{! comment}}` */)) {
+      // note: this code is messy because it turns out to be annoying for getSpecialTag
+      // to return `null` when it scans a comment.  Also, this code should be de-duped
+      // with getUnquotedAttributeValue
+      if (special) {
+        tokens.push({t: 'Special', v: special});
+        charsTokenToExtend = null;
+      }
     } else {
       if (! charsTokenToExtend) {
         charsTokenToExtend = { t: 'Chars', v: '' };
         tokens.push(charsTokenToExtend);
       }
-      charsTokenToExtend.v += ch;
+      charsTokenToExtend.v += (ch === '\r' ? '\n' : ch);
       scanner.pos++;
+      if (ch === '\r' && scanner.peek() === '\n')
+        scanner.pos++;
     }
   }
 };
@@ -329,6 +348,7 @@ var getUnquotedAttributeValue = function (scanner) {
   while (true) {
     var ch = scanner.peek();
     var special;
+    var curPos = scanner.pos;
     if (HTML_SPACE.test(ch) || ch === '>') {
       return tokens;
     } else if (! ch) {
@@ -339,10 +359,13 @@ var getUnquotedAttributeValue = function (scanner) {
       tokens.push(charRef);
       charsTokenToExtend = null;
     } else if (scanner.getSpecialTag &&
-               (special = scanner.getSpecialTag(scanner,
-                                                TEMPLATE_TAG_POSITION.IN_ATTRIBUTE))) {
-      tokens.push({t: 'Special', v: special});
-      charsTokenToExtend = null;
+               ((special = scanner.getSpecialTag(scanner,
+                                                 TEMPLATE_TAG_POSITION.IN_ATTRIBUTE)) ||
+                scanner.pos > curPos /* `{{! comment}}` */)) {
+      if (special) {
+        tokens.push({t: 'Special', v: special});
+        charsTokenToExtend = null;
+      }
     } else {
       if (! charsTokenToExtend) {
         charsTokenToExtend = { t: 'Chars', v: '' };
@@ -354,7 +377,7 @@ var getUnquotedAttributeValue = function (scanner) {
   }
 };
 
-getTagToken = function (scanner) {
+getTagToken = HTMLTools.Parse.getTagToken = function (scanner) {
   if (! (scanner.peek() === '<' && scanner.rest().charAt(1) !== '!'))
     return null;
   scanner.pos++;
@@ -370,7 +393,7 @@ getTagToken = function (scanner) {
   var tagName = getTagName(scanner);
   if (! tagName)
     scanner.fatal("Expected tag name after `<`");
-  tag.n = HTML.asciiLowerCase(tagName);
+  tag.n = HTMLTools.properCaseTagName(tagName);
 
   if (scanner.peek() === '/' && tag.isEnd)
     scanner.fatal("End tag can't have trailing slash");
@@ -405,12 +428,15 @@ getTagToken = function (scanner) {
     var spacesRequiredAfter = false;
 
     // first, try for a special tag.
-    var special;
-    if (scanner.getSpecialTag &&
-        (special = scanner.getSpecialTag(scanner,
-                                         TEMPLATE_TAG_POSITION.IN_START_TAG))) {
-      tag.attrs.$specials = (tag.attrs.$specials || []);
-      tag.attrs.$specials.push({ t: 'Special', v: special });
+    var curPos = scanner.pos;
+    var special = (scanner.getSpecialTag &&
+                   scanner.getSpecialTag(scanner,
+                                         TEMPLATE_TAG_POSITION.IN_START_TAG));
+    if (special || (scanner.pos > curPos)) {
+      if (special) {
+        tag.attrs.$specials = (tag.attrs.$specials || []);
+        tag.attrs.$specials.push({ t: 'Special', v: special });
+      } // else, must have scanned a `{{! comment}}`
 
       spacesRequiredAfter = true;
     } else {
@@ -418,7 +444,13 @@ getTagToken = function (scanner) {
       var attributeName = getAttributeName(scanner);
       if (! attributeName)
         scanner.fatal("Expected attribute name in tag");
-      attributeName = HTML.asciiLowerCase(attributeName);
+      // Throw error on `{` in attribute name.  This provides *some* error message
+      // if someone writes `<a x{{y}}>` or `<a x{{y}}=z>`.  The HTML tokenization
+      // spec doesn't say that `{` is invalid, but the DOM API (setAttribute) won't
+      // allow it, so who cares.
+      if (attributeName.indexOf('{') >= 0)
+        scanner.fatal("Unexpected `{` in attribute name.");
+      attributeName = HTMLTools.properCaseAttributeName(attributeName);
 
       if (tag.attrs.hasOwnProperty(attributeName))
         scanner.fatal("Duplicate attribute in tag: " + attributeName);
@@ -474,7 +506,7 @@ getTagToken = function (scanner) {
   }
 };
 
-TEMPLATE_TAG_POSITION = {
+TEMPLATE_TAG_POSITION = HTMLTools.TEMPLATE_TAG_POSITION = {
   ELEMENT: 1,
   IN_START_TAG: 2,
   IN_ATTRIBUTE: 3,
@@ -482,13 +514,13 @@ TEMPLATE_TAG_POSITION = {
   IN_RAWTEXT: 5
 };
 
-// tagName is lowercase
+// tagName must be proper case
 isLookingAtEndTag = function (scanner, tagName) {
   var rest = scanner.rest();
   var pos = 0; // into rest
   var firstPart = /^<\/([a-zA-Z]+)/.exec(rest);
   if (firstPart &&
-      HTML.asciiLowerCase(firstPart[1]) === tagName) {
+      HTMLTools.properCaseTagName(firstPart[1]) === tagName) {
     // we've seen `</foo`, now see if the end tag continues
     pos += firstPart[0].length;
     while (pos < rest.length && HTML_SPACE.test(rest.charAt(pos)))

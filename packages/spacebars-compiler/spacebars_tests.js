@@ -6,7 +6,7 @@ Tinytest.add("spacebars - stache tags", function (test) {
       var msg = '';
       test.throws(function () {
         try {
-          Spacebars.parseStacheTag(input);
+          Spacebars.TemplateTag.parse(input);
         } catch (e) {
           msg = e.message;
           throw e;
@@ -14,11 +14,7 @@ Tinytest.add("spacebars - stache tags", function (test) {
       });
       test.equal(msg.slice(0, expected.length), expected);
     } else {
-      var result = Spacebars.parseStacheTag(input);
-      test.equal(result.charPos, 0);
-      test.equal(result.charLength, input.length);
-      delete result.charPos;
-      delete result.charLength;
+      var result = Spacebars.TemplateTag.parse(input);
       test.equal(result, expected);
     }
   };
@@ -36,6 +32,12 @@ Tinytest.add("spacebars - stache tags", function (test) {
   run('{{! asdf }}', {type: 'COMMENT', value: ' asdf '});
   run('{{ ! asdf }}', {type: 'COMMENT', value: ' asdf '});
   run('{{ ! asdf }asdf', "Unclosed");
+  run('{{!-- asdf --}}', {type: 'BLOCKCOMMENT', value: ' asdf '});
+  run('{{ !-- asdf -- }}', {type: 'BLOCKCOMMENT', value: ' asdf '});
+  run('{{ !-- {{asdf}} -- }}', {type: 'BLOCKCOMMENT', value: ' {{asdf}} '});
+  run('{{ !-- {{as--df}} --}}', {type: 'BLOCKCOMMENT', value: ' {{as--df}} '});
+  run('{{ !-- asdf }asdf', "Unclosed");
+  run('{{ !-- asdf --}asdf', "Unclosed");
   run('{{else}}', {type: 'ELSE'});
   run('{{ else }}', {type: 'ELSE'});
   run('{{else x}}', "Expected");
@@ -58,19 +60,18 @@ Tinytest.add("spacebars - stache tags", function (test) {
   run('{{ # foo  3 }}', {type: 'BLOCKOPEN', path: ['foo'],
                          args: [['NUMBER', 3]]});
   run('{{>foo 3}}', {type: 'INCLUSION', path: ['foo'], args: [['NUMBER', 3]]});
-  run('{{>foo 3 4}}', "Only one positional argument");
   run('{{ > foo  3 }}', {type: 'INCLUSION', path: ['foo'],
                          args: [['NUMBER', 3]]});
   run('{{{foo 3}}}', {type: 'TRIPLE', path: ['foo'], args: [['NUMBER', 3]]});
 
-  run('{{foo bar baz=qux x3=. ./foo foo/bar a.b.c}}',
+  run('{{foo bar ./foo foo/bar a.b.c baz=qux x3=.}}',
       {type: 'DOUBLE', path: ['foo'],
        args: [['PATH', ['bar']],
-              ['PATH', ['qux'], 'baz'],
-              ['PATH', ['.'], 'x3'],
               ['PATH', ['.', 'foo']],
               ['PATH', ['foo', 'bar']],
-              ['PATH', ['a', 'b', 'c']]]});
+              ['PATH', ['a', 'b', 'c']],
+              ['PATH', ['qux'], 'baz'],
+              ['PATH', ['.'], 'x3']]});
 
   run('{{{x 0.3 [0].[3] .4 ./[4]}}}',
       {type: 'TRIPLE', path: ['x'],
@@ -116,6 +117,48 @@ Tinytest.add("spacebars - stache tags", function (test) {
 
   run('{{foo -1 -2}}', {type: 'DOUBLE', path: ['foo'],
                         args: [['NUMBER', -1], ['NUMBER', -2]]});
+
+  run('{{x "\'"}}', {type: 'DOUBLE', path: ['x'], args: [['STRING', "'"]]});
+  run('{{x \'"\'}}', {type: 'DOUBLE', path: ['x'], args: [['STRING', '"']]});
+
+  run('{{> foo x=1 y=2}}',
+      {type: 'INCLUSION', path: ['foo'],
+       args: [['NUMBER', 1, 'x'],
+              ['NUMBER', 2, 'y']]});
+  // spaces around '=' are fine
+  run('{{> foo x = 1 y = 2}}',
+      {type: 'INCLUSION', path: ['foo'],
+       args: [['NUMBER', 1, 'x'],
+              ['NUMBER', 2, 'y']]});
+  run('{{> foo with-dashes=1 another-one=2}}',
+      {type: 'INCLUSION', path: ['foo'],
+       args: [['NUMBER', 1, 'with-dashes'],
+              ['NUMBER', 2, 'another-one']]});
+  run('{{> foo 1="keyword can start with a number"}}',
+      {type: 'INCLUSION', path: ['foo'],
+       args: [['STRING', 'keyword can start with a number', '1']]});
+  run('{{> foo disallow-dashes-in-posarg}}',
+      "Expected");
+  run('{{> foo disallow-#=1}}',
+      "Expected");
+  run('{{> foo disallow->=1}}',
+      "Expected");
+  run('{{> foo disallow-{=1}}',
+      "Expected");
+  run('{{> foo disallow-(=1}}',
+      "Expected");
+  run('{{> foo disallow-}=1}}',
+      "Expected");
+  run('{{> foo disallow-)=1}}',
+      "Expected");
+  run('{{> foo x=1 y=2 z}}',
+      "Can't have a non-keyword argument");
+
+  run('{{true.foo}}', "Can't use");
+  run('{{foo.this}}', "Can only use");
+  run('{{./this}}', "Can only use");
+  run('{{../this}}', "Can only use");
+
 });
 
 
@@ -183,18 +226,59 @@ Tinytest.add("spacebars - Spacebars.dot", function (test) {
 
 Tinytest.add("spacebars - parse", function (test) {
   test.equal(HTML.toJS(Spacebars.parse('{{foo}}')),
-             'HTML.Special({type: "DOUBLE", path: ["foo"]})');
+             'HTMLTools.Special({type: "DOUBLE", path: ["foo"]})');
 
   test.equal(HTML.toJS(Spacebars.parse('{{!foo}}')), 'null');
   test.equal(HTML.toJS(Spacebars.parse('x{{!foo}}y')), '"xy"');
 
+  test.equal(HTML.toJS(Spacebars.parse('{{!--foo--}}')), 'null');
+  test.equal(HTML.toJS(Spacebars.parse('x{{!--foo--}}y')), '"xy"');
+
   test.equal(HTML.toJS(Spacebars.parse('{{#foo}}x{{/foo}}')),
-             'HTML.Special({type: "BLOCKOPEN", path: ["foo"], content: "x"})');
+             'HTMLTools.Special({type: "BLOCKOPEN", path: ["foo"], content: "x"})');
 
   test.equal(HTML.toJS(Spacebars.parse('{{#foo}}{{#bar}}{{/bar}}{{/foo}}')),
-             'HTML.Special({type: "BLOCKOPEN", path: ["foo"], content: HTML.Special({type: "BLOCKOPEN", path: ["bar"]})})');
+             'HTMLTools.Special({type: "BLOCKOPEN", path: ["foo"], content: HTMLTools.Special({type: "BLOCKOPEN", path: ["bar"]})})');
 
   test.equal(HTML.toJS(Spacebars.parse('<div>hello</div> {{#foo}}<div>{{#bar}}world{{/bar}}</div>{{/foo}}')),
-             '[HTML.DIV("hello"), " ", HTML.Special({type: "BLOCKOPEN", path: ["foo"], content: HTML.DIV(HTML.Special({type: "BLOCKOPEN", path: ["bar"], content: "world"}))})]');
+             '[HTML.DIV("hello"), " ", HTMLTools.Special({type: "BLOCKOPEN", path: ["foo"], content: HTML.DIV(HTMLTools.Special({type: "BLOCKOPEN", path: ["bar"], content: "world"}))})]');
+
+
+  test.throws(function () {
+    Spacebars.parse('<a {{{x}}}></a>');
+  });
+  test.throws(function () {
+    Spacebars.parse('<a {{#if x}}{{/if}}></a>');
+  });
+  test.throws(function () {
+    Spacebars.parse('<a {{k}}={[v}}></a>');
+  });
+  test.throws(function () {
+    Spacebars.parse('<a x{{y}}></a>');
+  });
+  test.throws(function () {
+    Spacebars.parse('<a x{{y}}=z></a>');
+  });
+  test.throws(function () {
+    Spacebars.parse('<a {{> x}}></a>');
+  });
+
+  test.equal(HTML.toJS(Spacebars.parse('<a {{! x--}} b=c{{! x}} {{! x}}></a>')),
+             'HTML.A({b: "c"})');
+
+  test.equal(HTML.toJS(Spacebars.parse('<a {{!-- x--}} b=c{{ !-- x --}} {{!-- x -- }}></a>')),
+             'HTML.A({b: "c"})');
+
+  // currently, if there are only comments, the attribute is truthy.  This is
+  // because comments are stripped during tokenization.  If we include
+  // comments in the token stream, these cases will become falsy for selected.
+  test.equal(HTML.toJS(Spacebars.parse('<input selected={{!foo}}>')),
+             'HTML.INPUT({selected: ""})');
+  test.equal(HTML.toJS(Spacebars.parse('<input selected={{!foo}}{{!bar}}>')),
+             'HTML.INPUT({selected: ""})');
+  test.equal(HTML.toJS(Spacebars.parse('<input selected={{!--foo--}}>')),
+    'HTML.INPUT({selected: ""})');
+  test.equal(HTML.toJS(Spacebars.parse('<input selected={{!--foo--}}{{!--bar--}}>')),
+    'HTML.INPUT({selected: ""})');
 
 });

@@ -8,8 +8,12 @@ Package.on_use(function (api) {
   api.use('deps', 'client');
   api.use('check', 'server');
   api.use('random', ['client', 'server']);
-  api.use('service-configuration', ['client', 'server']);
   api.use('ejson', 'server');
+  api.use('callback-hook', 'server');
+
+  // use unordered to work around a circular dependency
+  // (service-configuration needs Accounts.connection)
+  api.use('service-configuration', ['client', 'server'], { unordered: true });
 
   // needed for getting the currently logged-in user
   api.use('livedata', ['client', 'server']);
@@ -25,6 +29,8 @@ Package.on_use(function (api) {
   // Allow us to detect 'autopublish', and publish some Meteor.users fields if
   // it's loaded.
   api.use('autopublish', 'server', {weak: true});
+
+  api.use('oauth-encryption', 'server', {weak: true});
 
   api.export('Accounts');
 
@@ -46,5 +52,6 @@ Package.on_test(function (api) {
   api.use('tinytest');
   api.use('random');
   api.use('test-helpers');
+  api.use('oauth-encryption');
   api.add_files('accounts_tests.js', 'server');
 });

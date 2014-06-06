@@ -1,19 +1,23 @@
 
-HTML.Special = function (value) {
-  if (! (this instanceof HTML.Special))
+HTMLTools.Special = function (value) {
+  if (! (this instanceof HTMLTools.Special))
     // called without `new`
-    return new HTML.Special(value);
+    return new HTMLTools.Special(value);
 
   this.value = value;
 };
-HTML.Special.prototype.toJS = function (options) {
-  return HTML.Tag.prototype.toJS.call({tagName: 'Special',
+HTMLTools.Special.prototype.toJS = function (options) {
+  // XXX this is weird because toJS is defined in spacebars-compiler.
+  // Think about where HTMLTools.Special and toJS should go.
+  return HTML.Tag.prototype.toJS.call({tagName: 'HTMLTools.Special',
                                        attrs: this.value,
                                        children: []},
                                       options);
 };
 
-parseFragment = function (input, options) {
+// Parse a "fragment" of HTML, up to the end of the input or a particular
+// template tag (using the "shouldStop" option).
+HTMLTools.parseFragment = function (input, options) {
   var scanner;
   if (typeof input === 'string')
     scanner = new Scanner(input);
@@ -26,7 +30,7 @@ parseFragment = function (input, options) {
 
   // ```
   // { getSpecialTag: function (scanner, templateTagPosition) {
-  //     if (templateTagPosition === HTML.TEMPLATE_TAG_POSITION.ELEMENT) {
+  //     if (templateTagPosition === HTMLTools.TEMPLATE_TAG_POSITION.ELEMENT) {
   //       ...
   // ```
   if (options && options.getSpecialTag)
@@ -47,8 +51,38 @@ parseFragment = function (input, options) {
   } else {
     result = getContent(scanner, shouldStop);
   }
-  if ((! shouldStop) && (! scanner.isEOF()))
-    scanner.fatal("Expected EOF");
+  if (! scanner.isEOF()) {
+    // If we aren't at the end of the input, we either stopped at an unmatched
+    // HTML end tag or at a template tag (like `{{else}}` or `{{/if}}`).
+    // Detect the former case (stopped at an HTML end tag) and throw a good
+    // error.
+
+    var posBefore = scanner.pos;
+
+    try {
+      var endTag = getHTMLToken(scanner);
+    } catch (e) {
+      // ignore errors from getSpecialTag
+    }
+
+    // XXX we make some assumptions about shouldStop here, like that it
+    // won't tell us to stop at an HTML end tag.  Should refactor
+    // `shouldStop` into something more suitable.
+    if (endTag && endTag.t === 'Tag' && endTag.isEnd) {
+      var closeTag = endTag.n;
+      var isVoidElement = HTML.isVoidElement(closeTag);
+      scanner.fatal("Unexpected HTML close tag" +
+                    (isVoidElement ?
+                     '.  <' + endTag.n + '> should have no close tag.' : ''));
+    }
+
+    scanner.pos = posBefore; // rewind, we'll continue parsing as usual
+
+    // If no "shouldStop" option was provided, we should have consumed the whole
+    // input.
+    if (! shouldStop)
+      scanner.fatal("Expected EOF");
+  }
 
   return result;
 };
@@ -58,7 +92,7 @@ parseFragment = function (input, options) {
 //
 // Adapted from
 // http://stackoverflow.com/questions/7126384/expressing-utf-16-unicode-characters-in-javascript/7126661.
-codePointToString = function(cp) {
+codePointToString = HTMLTools.codePointToString = function(cp) {
   if (cp >= 0 && cp <= 0xD7FF || cp >= 0xE000 && cp <= 0xFFFF) {
     return String.fromCharCode(cp);
   } else if (cp >= 0x10000 && cp <= 0x10FFFF) {
@@ -81,18 +115,14 @@ codePointToString = function(cp) {
   }
 };
 
-getContent = function (scanner, shouldStopFunc) {
+getContent = HTMLTools.Parse.getContent = function (scanner, shouldStopFunc) {
   var items = [];
 
   while (! scanner.isEOF()) {
-    // Stop at any top-level end tag.  We could use the tokenizer
-    // but these two characters are a giveaway.
-    if (scanner.rest().slice(0, 2) === '</')
-      break;
-
     if (shouldStopFunc && shouldStopFunc(scanner))
       break;
 
+    var posBefore = scanner.pos;
     var token = getHTMLToken(scanner);
     if (! token)
       // tokenizer reached EOF on its own, e.g. while scanning
@@ -109,19 +139,21 @@ getContent = function (scanner, shouldStopFunc) {
       items.push(HTML.Comment(token.v));
     } else if (token.t === 'Special') {
       // token.v is an object `{ ... }`
-      items.push(HTML.Special(token.v));
+      items.push(HTMLTools.Special(token.v));
     } else if (token.t === 'Tag') {
-      if (token.isEnd)
-        // we've already screened for `</` so this shouldn't be
-        // possible.
-        scanner.fatal("Assertion failed: didn't expect end tag");
+      if (token.isEnd) {
+        // Stop when we encounter an end tag at the top level.
+        // Rewind; we'll re-parse the end tag later.
+        scanner.pos = posBefore;
+        break;
+      }
 
       var tagName = token.n;
       // is this an element with no close tag (a BR, HR, IMG, etc.) based
       // on its name?
       var isVoid = HTML.isVoidElement(tagName);
       if (token.isSelfClosing) {
-        if (! (isVoid || HTML.isKnownSVGElement(tagName)))
+        if (! (isVoid || HTML.isKnownSVGElement(tagName) || tagName.indexOf(':') >= 0))
           scanner.fatal('Only certain elements like BR, HR, IMG, etc. (and foreign elements like SVG) are allowed to self-close');
       }
 
@@ -132,6 +164,10 @@ getContent = function (scanner, shouldStopFunc) {
       if (isVoid || token.isSelfClosing) {
         items.push(attrs ? tagFunc(attrs) : tagFunc());
       } else {
+        // parse HTML tag contents.
+
+        // HTML treats a final `/` in a tag as part of an attribute, as in `<a href=/foo/>`, but the template author who writes `<circle r={{r}}/>`, say, may not be thinking about that, so generate a good error message in the "looks like self-close" case.
+        var looksLikeSelfClose = (scanner.input.substr(scanner.pos - 2, 2) === '/>');
 
         var content;
         if (token.n === 'textarea') {
@@ -142,19 +178,12 @@ getContent = function (scanner, shouldStopFunc) {
           content = getContent(scanner, shouldStopFunc);
         }
 
-        if (scanner.rest().slice(0, 2) !== '</')
-          scanner.fatal('Expected "' + tagName + '" end tag');
+        var endTag = getHTMLToken(scanner);
 
-        var endTag = getTagToken(scanner);
-
-        if (! (endTag.t === 'Tag' && endTag.isEnd))
-          // we've already seen `</` so this shouldn't be possible
-          // without erroring.
-          scanner.fatal("Assertion failed: expected end tag");
+        if (! (endTag && endTag.t === 'Tag' && endTag.isEnd && endTag.n === tagName))
+          scanner.fatal('Expected "' + tagName + '" end tag' + (looksLikeSelfClose ? ' -- if the "<' + token.n + ' />" tag was supposed to self-close, try adding a space before the "/"' : ''));
 
         // XXX support implied end tags in cases allowed by the spec
-        if (endTag.n !== tagName)
-          scanner.fatal('Expected "' + tagName + '" end tag, found "' + endTag.n + '"');
 
         // make `content` into an array suitable for applying tag constructor
         // as in `FOO.apply(null, content)`.
@@ -187,8 +216,8 @@ var pushOrAppendString = function (items, string) {
     items.push(string);
 };
 
-// get RCDATA to go in the lowercase tagName (e.g. "textarea")
-getRCData = function (scanner, tagName, shouldStopFunc) {
+// get RCDATA to go in the lowercase (or camel case) tagName (e.g. "textarea")
+getRCData = HTMLTools.Parse.getRCData = function (scanner, tagName, shouldStopFunc) {
   var items = [];
 
   while (! scanner.isEOF()) {
@@ -211,7 +240,7 @@ getRCData = function (scanner, tagName, shouldStopFunc) {
       items.push(convertCharRef(token));
     } else if (token.t === 'Special') {
       // token.v is an object `{ ... }`
-      items.push(HTML.Special(token.v));
+      items.push(HTMLTools.Special(token.v));
     } else {
       // (can't happen)
       scanner.fatal("Unknown or unexpected token type: " + token.t);
@@ -247,7 +276,7 @@ var getRawText = function (scanner, tagName, shouldStopFunc) {
       pushOrAppendString(items, token.v);
     } else if (token.t === 'Special') {
       // token.v is an object `{ ... }`
-      items.push(HTML.Special(token.v));
+      items.push(HTMLTools.Special(token.v));
     } else {
       // (can't happen)
       scanner.fatal("Unknown or unexpected token type: " + token.t);
@@ -274,12 +303,17 @@ var convertCharRef = function (token) {
 };
 
 // Input is always a dictionary (even if zero attributes) and each
-// value in the dictionary is an array of `Chars` and `CharRef`
-// tokens.  An empty array means the attribute has a value of "".
+// value in the dictionary is an array of `Chars`, `CharRef`,
+// and maybe `Special` tokens.
 //
 // Output is null if there are zero attributes, and otherwise a
-// dictionary.  Each value in the dictionary is a string (possibly
-// empty) or an array of non-empty strings and CharRef tags.
+// dictionary.  Each value in the dictionary is HTMLjs (e.g. a
+// string or an array of `Chars`, `CharRef`, and `Special`
+// nodes).
+//
+// An attribute value with no input tokens is represented as "",
+// not an empty array, in order to prop open empty attributes
+// with no template tags.
 var parseAttrs = function (attrs) {
   var result = null;
 
@@ -294,15 +328,9 @@ var parseAttrs = function (attrs) {
       if (token.t === 'CharRef') {
         outParts.push(convertCharRef(token));
       } else if (token.t === 'Special') {
-        outParts.push(HTML.Special(token.v));
+        outParts.push(HTMLTools.Special(token.v));
       } else if (token.t === 'Chars') {
-        var str = token.v;
-        var N = outParts.length;
-
-        if (N && (typeof outParts[N - 1] === 'string'))
-          outParts[N - 1] += str;
-        else
-          outParts.push(str);
+        pushOrAppendString(outParts, token.v);
       }
     }
 
@@ -311,10 +339,9 @@ var parseAttrs = function (attrs) {
       // array, even if there is only one Special.
       result[k] = outParts;
     } else {
-      var outValue = (outParts.length === 0 ? '' :
-                      (outParts.length === 1 ? outParts[0] :
-                       outParts));
-      var properKey = HTML.properCaseAttributeName(k);
+      var outValue = (inValue.length === 0 ? '' :
+                      (outParts.length === 1 ? outParts[0] : outParts));
+      var properKey = HTMLTools.properCaseAttributeName(k);
       result[properKey] = outValue;
     }
   }

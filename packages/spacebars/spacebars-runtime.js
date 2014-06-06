@@ -1,77 +1,45 @@
 Spacebars = {};
 
-// Returns true if `a` and `b` are `===`, unless they are of a mutable type.
-// (Because then, they may be equal references to an object that was mutated,
-// and we'll never know.  We save only a reference to the old object; we don't
-// do any deep-copying or diffing.)
-var safeEquals = function (a, b) {
-  if (a !== b)
-    return false;
-  else
-    return ((!a) || (typeof a === 'number') || (typeof a === 'boolean') ||
-            (typeof a === 'string'));
-};
+// * `templateOrFunction` - template (component) or function returning a template
+// or null
+Spacebars.include = function (templateOrFunction, contentBlock, elseContentBlock) {
+  if (contentBlock && ! UI.isComponent(contentBlock))
+    throw new Error('Second argument to Spacebars.include must be a template or UI.block if present');
+  if (elseContentBlock && ! UI.isComponent(elseContentBlock))
+    throw new Error('Third argument to Spacebars.include must be a template or UI.block if present');
 
-Spacebars.include = function (kindOrFunc, args) {
-  args = args || {};
-  if (typeof kindOrFunc === 'function') {
-    // function block helper
-    var func = kindOrFunc;
-
-    var hash = {};
-    // Call arguments if they are functions.  This may cause
-    // reactive dependencies!
-    for (var k in args) {
-      if (k !== 'data') {
-        var v = args[k];
-        hash[k] = (typeof v === 'function' ? v() : v);
-      }
-    }
-
-    var result;
-    if ('data' in args) {
-      var data = args.data;
-      data = (typeof data === 'function' ? data() : data);
-      result = func(data, { hash: hash });
-    } else {
-      result = func({ hash: hash });
-    }
-    // In `{{#foo}}...{{/foo}}`, if `foo` is a function that
-    // returns a component, attach __content and __elseContent
-    // to it.
-    if (UI.isComponent(result) &&
-        (('__content' in args) || ('__elseContent' in args))) {
-      var extra = {};
-      if ('__content' in args)
-        extra.__content = args.__content;
-      if ('__elseContent' in args)
-        extra.__elseContent = args.__elseContent;
-      result = result.extend(extra);
-    }
-    return result;
-  } else {
-    // Component
-    var kind = kindOrFunc;
-    if (! UI.isComponent(kind))
-      throw new Error("Expected template, found: " + kind);
-
-    // Note that there are no reactive dependencies established here.
-    if (args) {
-      var emboxedArgs = {};
-      for (var k in args) {
-        if (k === '__content' || k === '__elseContent')
-          emboxedArgs[k] = args[k];
-        else
-          emboxedArgs[k] = UI.emboxValue(args[k], safeEquals);
-      }
-
-      return kind.extend(emboxedArgs);
-    } else {
-      return kind;
-    }
+  var props = null;
+  if (contentBlock) {
+    props = (props || {});
+    props.__content = contentBlock;
   }
-};
+  if (elseContentBlock) {
+    props = (props || {});
+    props.__elseContent = elseContentBlock;
+  }
 
+  if (UI.isComponent(templateOrFunction))
+    return templateOrFunction.extend(props);
+
+  var func = templateOrFunction;
+
+  var f = function () {
+    var emboxedFunc = UI.namedEmboxValue('Spacebars.include', func);
+    f.stop = function () {
+      emboxedFunc.stop();
+    };
+    var tmpl = emboxedFunc();
+
+    if (tmpl === null)
+      return null;
+    if (! UI.isComponent(tmpl))
+      throw new Error("Expected null or template in return value from inclusion function, found: " + tmpl);
+
+    return tmpl.extend(props);
+  };
+
+  return f;
+};
 
 // Executes `{{foo bar baz}}` when called on `(foo, bar, baz)`.
 // If `bar` and `baz` are functions, they are called before
@@ -109,12 +77,13 @@ Spacebars.mustacheImpl = function (value/*, args*/) {
 Spacebars.mustache = function (value/*, args*/) {
   var result = Spacebars.mustacheImpl.apply(null, arguments);
 
-  if (result instanceof Handlebars.SafeString)
+  if (result instanceof Spacebars.SafeString)
     return HTML.Raw(result.toString());
   else
-    // map `null` and `undefined` to "", stringify anything else
-    // (e.g. strings, booleans, numbers including 0).
-    return String(result == null ? '' : result);
+    // map `null`, `undefined`, and `false` to null, which is important
+    // so that attributes with nully values are considered absent.
+    // stringify anything else (e.g. strings, booleans, numbers including 0).
+    return (result == null || result === false) ? null : String(result);
 };
 
 Spacebars.attrMustache = function (value/*, args*/) {
@@ -133,12 +102,20 @@ Spacebars.attrMustache = function (value/*, args*/) {
   }
 };
 
+Spacebars.dataMustache = function (value/*, args*/) {
+  var result = Spacebars.mustacheImpl.apply(null, arguments);
+
+  return result;
+};
+
 // Idempotently wrap in `HTML.Raw`.
 //
 // Called on the return value from `Spacebars.mustache` in case the
 // template uses triple-stache (`{{{foo bar baz}}}`).
 Spacebars.makeRaw = function (value) {
-  if (value instanceof HTML.Raw)
+  if (value == null) // null or undefined
+    return null;
+  else if (value instanceof HTML.Raw)
     return value;
   else
     return HTML.Raw(value);
@@ -170,10 +147,22 @@ Spacebars.call = function (value/*, args*/) {
 // is `instanceof Spacebars.kw`.
 Spacebars.kw = function (hash) {
   if (! (this instanceof Spacebars.kw))
+    // called without new; call with new
     return new Spacebars.kw(hash);
 
   this.hash = hash || {};
 };
+
+// Call this as `Spacebars.SafeString("some HTML")`.  The return value
+// is `instanceof Spacebars.SafeString` (and `instanceof Handlebars.SafeString).
+Spacebars.SafeString = function (html) {
+  if (! (this instanceof Spacebars.SafeString))
+    // called without new; call with new
+    return new Spacebars.SafeString(html);
+
+  return new Handlebars.SafeString(html);
+};
+Spacebars.SafeString.prototype = Handlebars.SafeString.prototype;
 
 // `Spacebars.dot(foo, "bar", "baz")` performs a special kind
 // of `foo.bar.baz` that allows safe indexing of `null` and
@@ -220,4 +209,35 @@ Spacebars.dot = function (value, id1/*, id2, ...*/) {
   return function (/*arguments*/) {
     return result.apply(value, arguments);
   };
+};
+
+// Implement Spacebars's #with, which renders its else case (or nothing)
+// if the argument is falsy.
+Spacebars.With = function (argFunc, contentBlock, elseContentBlock) {
+  return UI.Component.extend({
+    init: function () {
+      this.v = UI.emboxValue(argFunc, UI.safeEquals);
+    },
+    render: function () {
+      return UI.If(this.v, UI.With(this.v, contentBlock), elseContentBlock);
+    },
+    materialized: (function () {
+      var f = function () {
+        var self = this;
+        if (Deps.active) {
+          Deps.onInvalidate(function () {
+            self.v.stop();
+          });
+        }
+      };
+      f.isWith = true;
+      return f;
+    })()
+  });
+};
+
+Spacebars.TemplateWith = function (argFunc, contentBlock) {
+  var w = UI.With(argFunc, contentBlock);
+  w.__isTemplateWith = true;
+  return w;
 };
